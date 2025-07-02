@@ -1,76 +1,68 @@
-# Before you begin, here are a few notes about these capture-the-flag
-# challenges.
+# 在开始之前，请注意以下关于这些 CTF (Capture The Flag) 挑战的几点说明。
 #
-# Each binary, when run, will ask for a password, which can be entered via stdin
-# (typing it into the console.) Many of the levels will accept many different
-# passwords. Your goal is to find a single password that works for each binary.
+# 每个二进制文件在运行时都会要求输入密码，密码可以通过标准输入 (在控制台中键入) 提交。
+# 许多关卡会接受多种不同的密码。你的目标是找到一个适用于每个二进制文件的密码。
 #
-# If you enter an incorrect password, the program will print "Try again." If you
-# enter a correct password, the program will print "Good Job."
+# 如果输入错误的密码，程序会打印 "Try again."。如果输入正确的密码，程序会打印 "Good Job."。
 #
-# Each challenge will be accompanied by a file like this one, named
-# "scaffoldXX.py". It will offer guidance as well as the skeleton of a possible
-# solution. You will have to edit each file. In some cases, you will have to
-# edit it significantly. While use of these files is recommended, you can write
-# a solution without them, if you find that they are too restrictive.
+# 每个挑战都会附带一个类似这样的文件，名为 "scaffoldXX.py"。它会提供指导以及一个可能的解决方案的骨架。
+# 你需要编辑每个文件。在某些情况下，你可能需要进行大幅修改。虽然推荐使用这些文件，
+# 但如果你发现它们过于受限，也可以不依赖它们来编写解决方案。
 #
-# Places in the scaffoldXX.py that require a simple substitution will be marked
-# with three question marks (???). Places that require more code will be marked
-# with an ellipsis (...). Comments will document any new concepts, but will be
-# omitted for concepts that have already been covered (you will need to use
-# previous scaffoldXX.py files as a reference to solve the challenges.) If a
-# comment documents a part of the code that needs to be changed, it will be
-# marked with an exclamation point at the end, on a separate line (!).
+# 在 scaffoldXX.py 中需要简单替换的地方会用三个问号 (???) 标记。
+# 需要编写更多代码的地方会用省略号 (...) 标记。
+# 注释会记录任何新的概念，但对于已经讲过的概念将省略 (你需要参考之前的 scaffoldXX.py 文件来解决挑战)。
+# 如果注释记录了需要修改的代码部分，它会在末尾加上感叹号，并单独占一行 (!)。
 
 import angr
 import sys
 
 def main(argv):
-  # Create an Angr project.
-  # If you want to be able to point to the binary from the command line, you can
-  # use argv[1] as the parameter. Then, you can run the script from the command
-  # line as follows:
-  # python ./scaffold00.py [binary]
+  # 创建一个 angr 项目。
+  # 如果你想在命令行中指定二进制文件路径，可以将 argv[1] 作为参数。
+  # 然后，你可以像这样从命令行运行脚本：
+  # python ./scaffold00.py [二进制文件路径]
   # (!)
-  path_to_binary = ???  # :string
+  path_to_binary = ???  # :string (这里应填写二进制文件的路径)
   project = angr.Project(path_to_binary)
 
-  # Tell Angr where to start executing (should it start from the main()
-  # function or somewhere else?) For now, use the entry_state function
-  # to instruct Angr to start from the main() function.
+  # 告诉 angr 从哪里开始执行 (是从 main() 函数开始还是其他地方？)。
+  # 目前，使用 entry_state 函数指示 angr 从 main() 函数开始。
   initial_state = project.factory.entry_state(
+    # 添加这些选项是为了确保 angr 在处理未定义内存和寄存器时不会因为未初始化而崩溃。
+    # SYMBOL_FILL_UNCONSTRAINED_MEMORY: 用符号值填充未约束的内存。
+    # SYMBOL_FILL_UNCONSTRAINED_REGISTERS: 用符号值填充未约束的寄存器。
     add_options = { angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
                     angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS}
   )
 
-  # Create a simulation manager initialized with the starting state. It provides
-  # a number of useful tools to search and execute the binary.
+  # 创建一个用起始状态初始化的模拟管理器 (simulation manager)。
+  # 它提供了许多有用的工具来搜索和执行二进制文件。
   simulation = project.factory.simgr(initial_state)
 
-  # Explore the binary to attempt to find the address that prints "Good Job."
-  # You will have to find the address you want to find and insert it here. 
-  # This function will keep executing until it either finds a solution or it 
-  # has explored every possible path through the executable.
+  # 探索二进制文件，尝试找到打印 "Good Job." 的地址。
+  # 你需要找到目标地址并将其插入此处。
+  # 这个函数会持续执行，直到找到解决方案或探索完可执行文件中的所有可能路径。
   # (!)
-  print_good_address = ???  # :integer (probably in hexadecimal)
+  print_good_address = ???  # :integer (通常是十六进制格式的地址)
   simulation.explore(find=print_good_address)
 
-  # Check that we have found a solution. The simulation.explore() method will
-  # set simulation.found to a list of the states that it could find that reach
-  # the instruction we asked it to search for. Remember, in Python, if a list
-  # is empty, it will be evaluated as false, otherwise true.
+  # 检查是否找到了解决方案。simulation.explore() 方法会将找到的、
+  # 能够到达目标指令的状态列表赋值给 simulation.found。
+  # 请记住，在 Python 中，空列表会被评估为 False，非空列表则为 True。
   if simulation.found:
-    # The explore method stops after it finds a single state that arrives at the
-    # target address.
+    # explore 方法在找到一个到达目标地址的状态后就会停止。
     solution_state = simulation.found[0]
 
-    # Print the string that Angr wrote to stdin to follow solution_state. This 
-    # is our solution.
+    # 打印 angr 在标准输入中写入的、用于遵循 solution_state 的字符串。这就是我们的解决方案。
+    # solution_state.posix.dumps(sys.stdin.fileno()) 获取标准输入的文件内容。
+    # .decode() 将字节串解码为字符串。
     print(solution_state.posix.dumps(sys.stdin.fileno()).decode())
   else:
-    # If Angr could not find a path that reaches print_good_address, throw an
-    # error. Perhaps you mistyped the print_good_address?
-    raise Exception('Could not find the solution')
+    # 如果 angr 未能找到到达 print_good_address 的路径，则抛出异常。
+    # 可能是你输入的 print_good_address 地址有误？
+    raise Exception('未能找到解决方案')
 
 if __name__ == '__main__':
+  # 这是一个标准的 Python 写法，确保只有当脚本作为主程序运行时，才会执行 main 函数。
   main(sys.argv)
