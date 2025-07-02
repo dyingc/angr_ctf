@@ -111,18 +111,21 @@ source angr_ctf_env/bin/activate
 pip install --upgrade pip
 ```
 
-## 安装 angr
+## 安装 angr 和必要依赖
 
 ### 方法一：通过 PyPI 安装（推荐）
 ```bash
 # 激活虚拟环境
 source angr_ctf_env/bin/activate
 
-# 安装 angr
+# 安装 angr 和 angr CTF 必要依赖
 pip install angr jinja2
 
+# 可选：安装其他有用的工具
+pip install ipython pwntools
+
 # 验证安装
-python -c "import angr; print('angr version:', angr.__version__)"
+python -c "import angr, jinja2; print('angr version:', angr.__version__); print('jinja2 installed successfully')"
 ```
 
 ### 方法二：从源码安装
@@ -180,10 +183,13 @@ cd 00_angr_find
 # 查看文件结构
 ls -la
 # 输出：
-# 00_angr_find.c.jinja     # C 源码模板
-# generate.py              # 生成脚本
+# 00_angr_find.c.jinja     # C 源码模板（注意是.jinja不是.templite）
+# generate.py              # 生成脚本（需要jinja2依赖）
 # scaffold00.py            # 解题模板
-# description.txt          # 挑战描述
+# __init__.py              # Python包文件
+
+# 确保已安装jinja2
+pip install jinja2
 
 # 生成二进制文件
 python generate.py 1234 00_angr_find
@@ -212,8 +218,22 @@ make USERS='player' local
 # 进入挑战目录
 cd 00_angr_find
 
-# 查看挑战描述
-cat description.txt
+# 查看实际文件结构
+ls -la
+# 实际文件：
+# - 00_angr_find.c.jinja   (C源码模板)
+# - generate.py            (生成脚本)
+# - scaffold00.py          (解题模板，包含挑战说明)
+# - __init__.py            (Python包文件)
+
+# 查看解题模板了解挑战要求
+cat scaffold00.py
+
+# 查看源码模板了解程序逻辑
+cat 00_angr_find.c.jinja
+
+# 生成二进制文件
+python generate.py 1234 00_angr_find
 
 # 分析二进制文件
 file 00_angr_find
@@ -366,7 +386,18 @@ source angr_ctf_env/bin/activate
 pip install angr
 ```
 
-#### 3. angr 安装失败
+#### 3. jinja2 依赖问题
+```bash
+# 错误信息：ModuleNotFoundError: No module named 'jinja2'
+# 解决方案：
+pip install jinja2
+
+# 或重新安装完整环境
+pip install angr jinja2 ipython
+
+# 验证安装
+python -c "import jinja2; print('jinja2 version:', jinja2.__version__)"
+```
 ```bash
 # 清理 pip 缓存
 pip cache purge
@@ -379,7 +410,7 @@ pip install unicorn-engine
 pip install angr
 ```
 
-#### 4. 内存不足
+#### 4. angr 安装失败
 ```bash
 # 限制 angr 的内存使用
 export ANGR_MAX_MEMORY=2G
@@ -389,7 +420,7 @@ import angr
 project = angr.Project(binary, auto_load_libs=False, use_sim_procedures=True)
 ```
 
-#### 5. 性能优化
+#### 5. 内存不足
 ```python
 # 启用 Unicorn 引擎加速
 initial_state = project.factory.entry_state(add_options=angr.options.unicorn)
@@ -400,7 +431,7 @@ project = angr.Project(binary,
                       use_sim_procedures=True)
 ```
 
-### 调试技巧
+#### 6. 性能优化
 
 #### 1. 启用详细日志
 ```python
