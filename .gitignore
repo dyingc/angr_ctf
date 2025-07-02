@@ -5,25 +5,8 @@
 # GENERATED BINARIES AND EXECUTABLES
 # ============================================================================
 
-# angr CTF generated challenge binaries
-00_angr_find
-01_angr_avoid
-02_angr_find_condition
-03_angr_symbolic_registers
-04_angr_symbolic_stack
-05_angr_symbolic_memory
-06_angr_symbolic_dynamic_memory
-07_angr_symbolic_file
-08_angr_constraints
-09_angr_hooks
-10_angr_simprocedures
-11_angr_sim_scanf
-12_angr_veritesting
-13_angr_static_binary
-14_angr_shared_library
-15_angr_arbitrary_read
-16_angr_arbitrary_write
-17_angr_arbitrary_jump
+# Generated binaries and executables
+[0-9][0-9]_angr_*/[0-9][0-9]_angr_*
 
 # All generated binaries in dist/
 dist/*/[0-9][0-9]_*
