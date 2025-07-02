@@ -119,7 +119,7 @@ pip install --upgrade pip
 source angr_ctf_env/bin/activate
 
 # 安装 angr
-pip install angr
+pip install angr jinja2
 
 # 验证安装
 python -c "import angr; print('angr version:', angr.__version__)"
