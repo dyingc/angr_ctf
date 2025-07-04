@@ -20,25 +20,25 @@
 
 1.  **符号执行基础理论**
     *   **学习目标**：理解符号执行如何通过将程序输入视为符号变量来探索所有可能的执行路径，以及如何通过约束求解来找到满足特定条件的输入。
-    *   **推荐阅读**：[Symbolic Execution with angr](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest/core-concepts/symbolic.html)
+    *   **推荐阅读**：[Symbolic Execution with angr](https://docs.angr.io/en/latest/core-concepts/symbolic.html)
 
 2.  **angr 项目结构和基本工作流程**
     *   **学习目标**：掌握如何使用 `angr.Project` 加载二进制文件，这是所有 angr 分析的起点。了解 angr 的核心组件及其相互关系。
     *   **推荐阅读**：
-        *   [Core Concepts of angr](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest/core-concepts/toplevel.html)
-        *   [Loading Binaries in Angr with CLE](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest/core-concepts/loading.html)
+        *   [Core Concepts of angr](https://docs.angr.io/en/latest/core-concepts/toplevel.html)
+        *   [Loading Binaries in Angr with CLE](https://docs.angr.io/en/latest/core-concepts/loading.html)
 
 3.  **机器状态 (SimState)**
     *   **学习目标**：理解 `SimState` 对象在 angr 中扮演的角色，它代表了程序在某一时刻的完整状态（包括内存、寄存器、文件系统等）。学习如何创建初始状态（特别是 `entry_state`）以及如何访问和修改状态中的数据。
-    *   **推荐阅读**：[Machine State in angr](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest/core-concepts/states.html)
+    *   **推荐阅读**：[Machine State in angr](https://docs.angr.io/en/latest/core-concepts/states.html)
 
 4.  **模拟管理器 (SimulationManager)**
     *   **学习目标**：掌握 `SimulationManager` 的使用，它是 angr 中用于控制符号执行的核心工具。重点学习 `explore()` 方法，它允许您指定查找（`find`）和避免（`avoid`）的地址，从而高效地探索程序路径。
-    *   **推荐阅读**：[Simulation Managers](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest/core-concepts/pathgroups.html)
+    *   **推荐阅读**：[Simulation Managers](https://docs.angr.io/en/latest/core-concepts/pathgroups.html)
 
 5.  **符号表达式和约束求解**
     *   **学习目标**：理解 angr 如何使用 `claripy` 库处理符号表达式（位向量 Bitvectors 和抽象语法树 ASTs）。学习如何添加约束，并使用 `state.solver.eval()` 等方法从 SMT 求解器中获取满足约束的具体值。
-    *   **推荐阅读**：[Symbolic Expressions and Constraint Solving with angr](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest/core-concepts/solver.html)
+    *   **推荐阅读**：[Symbolic Expressions and Constraint Solving with angr](https://docs.angr.io/en/latest/core-concepts/solver.html)
 
 ## 技术要点详解
 
@@ -65,9 +65,9 @@
 
 ## 扩展学习
 
-*   **angr 官方文档**：[angr Documentation](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest.md) - 完整的 angr 文档，包含所有模块和 API 细节。
+*   **angr 官方文档**：[angr Documentation](https://docs.angr.io/en/latest.md) - 完整的 angr 文档，包含所有模块和 API 细节。
 *   **angr CTF 仓库**：[angr_ctf](https://github.com/jakespringer/angr_ctf) - 更多 angr CTF 挑战，可以帮助您进一步提升技能。
-*   **angr Cheatsheet**：[Angr Cheatsheet](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest/appendix/cheatsheet.html) - 快速参考 angr 的常用功能和代码片段。
+*   **angr Cheatsheet**：[Angr Cheatsheet](https://docs.angr.io/en/latest/appendix/cheatsheet.html) - 快速参考 angr 的常用功能和代码片段。
 
 ## 常见问题
 

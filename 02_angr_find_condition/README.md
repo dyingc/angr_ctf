@@ -21,11 +21,11 @@
 
 1.  **自定义探索条件**
     *   **学习目标**：理解 `angr.SimulationManager` 的 `explore()` 方法不仅可以接受地址作为 `find` 和 `avoid` 参数，还可以接受**自定义的 Python 函数**。这些函数接收一个 `SimState` 对象作为参数，并返回 `True` 或 `False` 来指示是否满足条件。
-    *   **推荐阅读**：[Simulation Managers](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest/core-concepts/pathgroups.html) (特别是关于 `explore()` 方法中 `find` 和 `avoid` 参数接受函数的部分)
+    *   **推荐阅读**：[Simulation Managers](https://docs.angr.io/en/latest/core-concepts/pathgroups.html) (特别是关于 `explore()` 方法中 `find` 和 `avoid` 参数接受函数的部分)
 
 2.  **标准输出的符号化与检查**
     *   **学习目标**：理解 angr 如何在符号执行过程中捕获程序的标准输出（stdout）。学习如何使用 `state.posix.dumps(sys.stdout.fileno())` 来获取当前状态下程序已经打印到标准输出的内容，并据此进行条件判断。
-    *   **推荐阅读**：[Machine State in angr](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest/core-concepts/states.html) (特别是关于 `state.posix.dumps` 的部分)
+    *   **推荐阅读**：[Machine State in angr](https://docs.angr.io/en/latest/core-concepts/states.html) (特别是关于 `state.posix.dumps` 的部分)
 
 ## 技术要点详解
 
@@ -55,9 +55,9 @@
 
 ## 扩展学习
 
-*   **angr 官方文档**：[angr Documentation](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest.md) - 完整的 angr 文档，包含所有模块和 API 细节。
+*   **angr 官方文档**：[angr Documentation](https://docs.angr.io/en/latest.md) - 完整的 angr 文档，包含所有模块和 API 细节。
 *   **angr CTF 仓库**：[angr_ctf](https://github.com/jakespringer/angr_ctf) - 更多 angr CTF 挑战，可以帮助您进一步提升技能。
-*   **angr Cheatsheet**：[Angr Cheatsheet](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest/appendix/cheatsheet.html) - 快速参考 angr 的常用功能和代码片段。
+*   **angr Cheatsheet**：[Angr Cheatsheet](https://docs.angr.io/en/latest/appendix/cheatsheet.html) - 快速参考 angr 的常用功能和代码片段。
 
 ## 常见问题
 

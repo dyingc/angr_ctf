@@ -21,7 +21,7 @@
 
 1.  **路径探索的精细控制**
     *   **学习目标**：理解 `angr.SimulationManager` 的 `explore()` 方法如何通过 `find` 和 `avoid` 参数来引导符号执行。`find` 参数用于指定希望到达的地址，而 `avoid` 参数用于指定希望规避的地址。这使得符号执行能够更高效地找到所需路径并规避不希望的路径。
-    *   **推荐阅读**：[Simulation Managers](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest/core-concepts/pathgroups.html) (特别是关于 `.explore()` 方法中 `find` 和 `avoid` 参数的部分)
+    *   **推荐阅读**：[Simulation Managers](https://docs.angr.io/en/latest/core-concepts/pathgroups.html) (特别是关于 `.explore()` 方法中 `find` 和 `avoid` 参数的部分)
 
 2.  **程序流分析**
     *   **学习目标**：通过阅读 C 源代码或反汇编，识别程序中导致不同输出（成功或失败）的关键函数或代码块的地址。这对于正确设置 `find` 和 `avoid` 地址至关重要。
@@ -51,9 +51,9 @@
 
 ## 扩展学习
 
-*   **angr 官方文档**：[angr Documentation](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest.md) - 完整的 angr 文档，包含所有模块和 API 细节。
+*   **angr 官方文档**：[angr Documentation](https://docs.angr.io/en/latest.md) - 完整的 angr 文档，包含所有模块和 API 细节。
 *   **angr CTF 仓库**：[angr_ctf](https://github.com/jakespringer/angr_ctf) - 更多 angr CTF 挑战，可以帮助您进一步提升技能。
-*   **angr Cheatsheet**：[Angr Cheatsheet](https://raw.githubusercontent.com/dyingc/mcp_docs/master/docs_output/angr/en/latest/appendix/cheatsheet.html) - 快速参考 angr 的常用功能和代码片段。
+*   **angr Cheatsheet**：[Angr Cheatsheet](https://docs.angr.io/en/latest/appendix/cheatsheet.html) - 快速参考 angr 的常用功能和代码片段。
 
 ## 常见问题
 

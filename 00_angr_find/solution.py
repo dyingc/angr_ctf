@@ -44,7 +44,7 @@ def main(argv):
   # 你需要找到目标地址并将其插入此处。
   # 这个函数会持续执行，直到找到解决方案或探索完可执行文件中的所有可能路径。
   # (!)
-  print_good_address = ''  # :integer (通常是十六进制格式的地址)
+  print_good_address = 0x080492c5  # :integer (通常是十六进制格式的地址)
   # explore 方法是 angr 中用于进行符号执行搜索的核心方法。
   # 它会接受一个或多个“探测器”来指导搜索过程。
   # `find=print_good_address` 是一个探测器，它告诉 angr：“请找到一个能够到达 `print_good_address` 地址的执行路径。”
