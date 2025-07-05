@@ -29,7 +29,7 @@
 ## 技术要点详解
 
 *   **确定 `find` 地址**：
-    *   通常是程序中打印 "Good Job." 字符串的指令地址。您需要使用反汇编工具（如 `objdump`、IDA Pro、Ghidra）来查找。
+    *   通常是程序中打印 "Good Job." 字符串的指令地址。您需要使用反汇编工具（如 `objdump`、`radare2`、IDA Pro、Ghidra）来查找。
 *   **确定 `avoid` 地址**：
     *   通常是程序中打印 "Try again." 或导致程序进入死胡同的指令地址。在 `01_angr_avoid` 挑战中，您会发现一个明确的 `avoid_me()` 函数，其地址就是您需要规避的。
 *   **`angr.SimulationManager.explore()` 方法**：
@@ -38,13 +38,21 @@
 ## 实践步骤
 
 1.  **分析二进制文件**：
-    *   使用 `objdump -d 01_angr_avoid` 或其他反汇编工具查看二进制文件的汇编代码。
-    *   查找 "Good Job." 字符串在内存中的位置，并确定打印该字符串的指令地址（作为 `find` 地址）。
-    *   查找 `avoid_me()` 函数的入口地址（作为 `avoid` 地址）。
+    *   使用 `radare2` 查看二进制文件的函数列表。在终端中运行：
+        ```bash
+        r2 -q -c 'aaa 2>/dev/null; e scr.color=0; e asm.lines=false; afl' 01_angr_avoid/01_angr_avoid
+        ```
+    *   从输出中，找到 `sym.avoid_me` 函数的入口地址（作为 `avoid` 地址）。例如，在上述输出中，`avoid_me` 的地址是 `0x08049223`。
+    *   查找可能打印 "Good Job." 字符串的函数。通常，这会是一个名称暗示成功（如 `maybe_good`）或直接处理输出的函数（如 `print_msg`）。确定这些函数的入口地址。在 `01_angr_avoid` 挑战中，`sym.maybe_good` (例如 `0x08049230`) 很可能是您要寻找的 `find` 地址。
+    *   **确认 `find` 地址**：为了确认 `maybe_good` 函数是否是正确的 `find` 地址，您可以使用 `radare2` 查看其反汇编代码：
+        ```bash
+        r2 -q -c 'pdf @sym.maybe_good' 01_angr_avoid/01_angr_avoid
+        ```
+        在反汇编输出中，查找包含 "Good Job." 字符串引用的指令（例如 `push str.Good_Job.` 后跟 `call sym.imp.puts`）。如果找到，则确认 `maybe_good` 是正确的 `find` 地址。
 2.  **修改 `scaffold01.py`**：
-    *   将 `path_to_binary` 设置为正确的二进制文件路径（例如 `'./01_angr_avoid'`）。
-    *   将 `print_good_address` 设置为您在步骤 1 中找到的 "Good Job." 打印地址。
-    *   将 `will_not_succeed_address` 设置为您在步骤 1 中找到的 `avoid_me()` 函数的地址。
+    *   将 `path_to_binary` 设置为正确的二进制文件路径（例如 `'./solutions/01_angr_avoid/01_angr_avoid'`）。
+    *   将 `print_good_address` 设置为您在步骤 1 中找到的 "Good Job." 相关函数的地址（例如 `0x08049230`）。
+    *   将 `will_not_succeed_address` 设置为您在步骤 1 中找到的 `avoid_me()` 函数的地址（例如 `0x08049223`）。
 3.  **运行解决方案**：
     *   执行您的 Python 脚本：`python scaffold01.py`
     *   脚本将输出找到的密码。
