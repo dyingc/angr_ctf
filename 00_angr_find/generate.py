@@ -50,7 +50,7 @@ def generate(argv):
     # 使用 gcc 编译 C 代码。
     # 'gcc -fno-pie -no-pie -fcf-protection=none -m32 -o ' + output_file + ' ' + temp.name
     # -fno-pie: 禁用位置无关代码生成（Piece）。
-    # -no-pie: 禁用位置无关可执行文件生成。
+    # -no-pie: 禁用位置无关可执行文件生成。(radare2的`pdf`命令显示的是rebased地址)
     # -fcf-protection=none: 禁用控制流保护（如 CFI）。
     # -m32: 生成 32 位可执行文件。
     # -o output_file: 指定输出的可执行文件名。

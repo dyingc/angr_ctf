@@ -21,7 +21,12 @@ def main(argv):
   # 然后，你可以像这样从命令行运行脚本：
   # python ./scaffold00.py [二进制文件路径]
   # (!)
-  path_to_binary = '00_angr_find/00_angr_find'  # :string (这里应填写二进制文件的路径)
+  path_to_binary = './00_angr_find/00_angr_find' # :string (这里应填写二进制文件的路径)
+  expected_output = b'Good Job.'
+  avoid_output = b'Try again.'
+  # path_to_binary = 'crackme100' # :string (这里应填写二进制文件的路径)
+  # expected_output = b'SUCCESS! Here is your flag:'
+  # avoid_output = b'FAILED!'
   project = angr.Project(path_to_binary)
   # 告诉 angr 从哪里开始执行 (是从 main() 函数开始还是其他地方？)。
   # 目前，使用 entry_state 函数指示 angr 从 main() 函数开始。
@@ -44,14 +49,18 @@ def main(argv):
   # 你需要找到目标地址并将其插入此处。
   # 这个函数会持续执行，直到找到解决方案或探索完可执行文件中的所有可能路径。
   # (!)
-  print_good_address = 0x080492c5  # :integer (通常是十六进制格式的地址)
+  # print_good_address = 0x00401378  # :integer (通常是十六进制格式的地址)
   # explore 方法是 angr 中用于进行符号执行搜索的核心方法。
   # 它会接受一个或多个“探测器”来指导搜索过程。
   # `find=print_good_address` 是一个探测器，它告诉 angr：“请找到一个能够到达 `print_good_address` 地址的执行路径。”
   # 当 angr 找到一个满足 `find` 条件的状态时，它会停止搜索，并将该状态放入 `simulation.found` 列表中。
   # `explore` 方法会管理一个状态的集合（称为“工作集”），并将它们进行符号执行。
   # 它会根据探测器的规则来决定哪些状态是“活的”（继续执行）、哪些是“找到的”（满足 `find` 条件）以及哪些是“死亡的”（无法继续执行或不满足条件）。
-  simulation.explore(find=print_good_address)
+  # simulation.explore(find=print_good_address)
+
+  # 使用更安全的基于输出的方法
+  simulation.explore(find=lambda s: expected_output in s.posix.dumps(sys.stdout.fileno()),
+                     avoid=lambda s: avoid_output in s.posix.dumps(sys.stdout.fileno()))
   # 检查是否找到了解决方案。simulation.explore() 方法会将找到的、
   # 能够到达目标指令的状态列表赋值给 simulation.found。
   # 请记住，在 Python 中，空列表会被评估为 False，非空列表则为 True。
@@ -62,8 +71,15 @@ def main(argv):
     # solution_state.posix.dumps(sys.stdin.fileno()) 获取标准输入的文件内容。
     # 在符号执行中，标准输入被视为一个符号值。`dumps` 方法会根据 `solution_state` 的约束来具体化（求解）这个符号值，
     # 并将其表示为实际的字节串。`sys.stdin.fileno()` 指定了我们要获取标准输入的文件描述符。
-    # .decode() 将字节串解码为字符串。
-    print(solution_state.posix.dumps(sys.stdin.fileno()).decode())
+    solution = solution_state.posix.dumps(sys.stdin.fileno())
+
+    # 如果你想将解决方案写入文件，可以使用以下代码：
+    file_name = '/tmp/solution.txt'
+    with open(file_name, 'wb') as f:
+      # 将解决方案写入文件。这里使用 'wb' 模式是因为我们要写入字节数据。
+      f.write(solution)
+    print(f'解决方案已写入 {file_name}')
+    print(f'使用：`{path_to_binary} < {file_name}` 来进行验证。')
   else:
     # 如果 angr 未能找到到达 print_good_address 的路径，则抛出异常。
     # 可能是你输入的 print_good_address 地址有误？
