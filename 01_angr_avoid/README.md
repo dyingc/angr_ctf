@@ -6,6 +6,8 @@
 
 这个挑战将帮助您掌握 `angr.SimulationManager` 中 `explore()` 方法的 `avoid` 参数，从而更精确地控制符号执行的探索方向。
 
+您可以通过[这里](https://www.tjc.im/reverse_engineering/angr_ctf/01_angr_avoid/#analyzing-the-binary)查看一篇别人写的笔记。
+
 ## 学习前置知识
 
 在解决此挑战之前，请确保您已理解并掌握 `00_angr_find` 挑战中的所有概念和技术。特别是：
@@ -48,11 +50,12 @@
         ```bash
         r2 -q -c 'pdf @sym.maybe_good' 01_angr_avoid/01_angr_avoid
         ```
+        ![Instructions executed when SUC](imgs/SUC.png)
         在反汇编输出中，查找包含 "Good Job." 字符串引用的指令（例如 `push str.Good_Job.` 后跟 `call sym.imp.puts`）。如果找到，则确认 `maybe_good` 是正确的 `find` 地址。
 2.  **修改 `scaffold01.py`**：
     *   将 `path_to_binary` 设置为正确的二进制文件路径（例如 `'./solutions/01_angr_avoid/01_angr_avoid'`）。
-    *   将 `print_good_address` 设置为您在步骤 1 中找到的 "Good Job." 相关函数的地址（例如 `0x08049230`）。
-    *   将 `will_not_succeed_address` 设置为您在步骤 1 中找到的 `avoid_me()` 函数的地址（例如 `0x08049223`）。
+    *   将 `print_good_address` 设置为您在步骤 1 中找到的 "Good Job." 相关函数的地址（例如 `0x0804925b` - 注意，`maybe_good`函数中，并不是只要进入就表示正确的，这点和`avoid_me`不一样）。
+    *   将 `will_not_succeed_address` 设置为您在步骤 1 中找到的 `avoid_me()` 函数的地址（例如 `0x08049223`。另外，根据如上截图，我们也可以考虑把 `0x0804926a` 加入到这里）。
 3.  **运行解决方案**：
     *   执行您的 Python 脚本：`python scaffold01.py`
     *   脚本将输出找到的密码。
