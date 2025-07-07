@@ -96,12 +96,12 @@
 2.  **Claripy 与符号位向量 (`claripy.BVS`)**
     *   **学习目标**：学习使用 `claripy`，即 angr 的解算器抽象层。掌握如何创建符号变量，特别是 `claripy.BVS('variable_name', bit_length)`，它用于创建一个指定位宽的“位向量符号”（Bit-Vector Symbol），代表一个未知的数值。
     *   **推荐阅读**：
-        *   [Symbolic Expressions and Constraint Solving with angr](https://docs.angr.io/en/latest/core-concepts/solver.html) - 解释了如何创建和使用符号变量及约束，是本挑战的核心技术。
+        *   [Symbolic Expressions and Constraint Solving](https://docs.angr.io/en/latest/core-concepts/solver.html) - 解释了如何创建和使用符号变量及约束，是本挑战的核心技术（尤其是：[Working with Bitvectors](https://docs.angr.io/en/latest/core-concepts/solver.html#working-with-bitvectors) 以及  [Symbolic Constraints](https://docs.angr.io/en/latest/core-concepts/solver.html#symbolic-constraints) 这两个小节）。
         *   [Claripy: The Solver Engine](https://docs.angr.io/en/latest/advanced-topics/claripy.html) - 为希望深入了解解算器后端的学习者提供更详细的背景信息。
 
 3.  **约束求解 (`solver.eval`)**
     *   **学习目标**：理解当 `angr` 找到一个满足条件的路径（成功状态）后，其内部的解算器（solver）已经为所有符号变量找到了一组可行的具体值。学习如何使用 `found_state.solver.eval(symbolic_variable)` 来提取这些具体值。
-    *   **推荐阅读**：[Symbolic Expressions and Constraint Solving with angr](https://docs.angr.io/en/latest/core-concepts/solver.html) - 该文档同样清晰地演示了如何求解和评估符号变量。
+    *   **推荐阅读**：[Constraint Solving](https://docs.angr.io/en/latest/core-concepts/solver.html#constraint-solving) - 该文档清晰地演示了如何求解和评估符号变量。
 
 ## 技术要点详解
 
@@ -110,7 +110,7 @@
 *   **`initial_state.regs.eax = eax_symbol`**：
     *   这是本挑战最关键的一步。我们将刚刚创建的符号变量 `eax_symbol` 赋值给初始状态的 `eax` 寄存器。angr 在后续的符号执行中，会跟踪这个符号变量如何被程序操作。
 *   **寻找 `find` 和 `avoid` 地址**：
-    *   与之前的挑战类似，您需要使用反汇编工具（如 `objdump -d`）来找到打印 "Good Job." 和 "Try again." 的代码地址，并将它们分别用作 `explore()` 方法的 `find` 和 `avoid` 参数。
+    *   与之前的挑战类似，您需要使用反汇编工具（如 `radare2`）来找到打印 "Good Job." 和 "Try again." 的代码地址，并将它们分别用作 `explore()` 方法的 `find` 和 `avoid` 参数。
 *   **`simulation.explore(find=find_address, avoid=avoid_address)`**：
     *   启动符号执行，angr 会探索所有可能的路径，直到找到一个状态其 `rip` (指令指针) 等于 `find_address`。
 *   **`solution_state = simulation.found[0]`**：
@@ -123,9 +123,40 @@
 1.  **生成 `03_angr_symbolic_registers` 可执行文件**：
     *   `python generate.py 1234 03_angr_symbolic_registers` (您可以使用任何种子)。
 2.  **获取 Find/Avoid 地址**：
-    *   运行 `objdump -d -M intel 03_angr_symbolic_registers/03_angr_symbolic_registers`。
-    *   找到打印 "Good Job." 之前 `call` 指令的地址作为 `find_address`。
-    *   找到打印 "Try again." 之前 `call` 指令的地址作为 `avoid_address`。
+    *   运行 `r2 -q -c 'iz' 03_angr_symbolic_registers`。
+    ```bash
+    $ r2 -q -c 'iz' 03_angr_symbolic_registers 2>/dev/null
+    nth paddr      vaddr      len size section type  string
+    ―――――――――――――――――――――――――――――――――――――――――――――――――――――――
+    0   0x0000200b 0x0804a00b 8   9    .rodata ascii %x %x %x
+    1   0x00002014 0x0804a014 20  21   .rodata ascii Enter the password:
+    2   0x00002029 0x0804a029 10  11   .rodata ascii Try again.
+    3   0x00002034 0x0804a034 9   10   .rodata ascii Good Job.
+    ```
+    *   找到对 "Good Job." 的引用（`vaddr`: `0x0804a034`）
+    ```bash
+    $ r2 -q -c 'aaa 2>/dev/null; axt @0x0804a034' 03_angr_symbolic_registers 2>/dev/null
+    main 0x80495b8 [STRN:r--] push str.Good_Job.
+    $ r2 -q -c 'aaa 2>/dev/null; pd 5 @0x80495b8' 03_angr_symbolic_registers 2>/dev/null
+    │ 0x080495b8      6834a00408                  push str.Good_Job.       ; 0x804a034 ; "Good Job." ; push word, doubleword or quadword onto the stack
+    │ 0x080495bd      e88efaffff                  call sym.imp.puts        ; calls a subroutine, push eip into the stack (esp) ; int puts(const char *s)
+    │ 0x080495c2      83c410                      add esp, 0x10            ; adds src and dst, stores result on dst
+    │ ; CODE XREF from main @ 0x80495b3(x)
+    │ 0x080495c5      b800000000                  mov eax, 0               ; moves data from src to dst
+    │ 0x080495ca      8b4dfc                      mov ecx, dword [var_4h]  ; moves data from src to dst
+    ```
+    *   类似的，找到对 "Try again." 的引用（`vaddr`: `0x0804a029`）
+    ```bash
+    $ r2 -q -c 'aaa 2>/dev/null; axt @0x0804a029' 03_angr_symbolic_registers 2>/dev/null
+    main 0x80495a6 [STRN:r--] push str.Try_again.
+    $ r2 -q -c 'aaa 2>/dev/null; pd 5 @0x80495a6' 03_angr_symbolic_registers 2>/dev/null
+    │ 0x080495a6      6829a00408                  push str.Try_again.      ; 0x804a029 ; "Try again." ; push word, doubleword or quadword onto the stack
+    │ 0x080495ab      e8a0faffff                  call sym.imp.puts        ; calls a subroutine, push eip into the stack (esp) ; int puts(const char *s)
+    │ 0x080495b0      83c410                      add esp, 0x10            ; adds src and dst, stores result on dst
+    │ 0x080495b3      eb10                   ╭──< jmp 0x80495c5            ; jump
+    │ ; CODE XREF from main @ 0x80495a1(x)
+    │ 0x080495b5      83ec0c                 │    sub esp, 0xc             ; substract src and dst, stores result on dst
+    ```
 3.  **修改 `scaffold03.py`**：
     *   将 `path_to_binary` 设置为正确的二进制文件路径。
     *   创建三个 32 位的 `claripy.BVS` 符号变量，分别用于 `eax`、`ebx` 和 `edx`。
