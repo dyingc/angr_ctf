@@ -295,7 +295,6 @@ tramp
 .\#*
 
 # VS Code
-.vscode/
 *.code-workspace
 
 # PyCharm

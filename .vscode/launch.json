@@ -1,0 +1,46 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Current File with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": "${command:pickArgs}"
+        },
+        {
+            "name": "CTF 00 solution",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/00_angr_find/solution.py",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "CTF 02 solution",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/02_angr_find_condition/solution.py",
+            "console": "integratedTerminal",
+            "args": ["02_angr_find_condition/02_angr_find_condition"]
+        },
+        {
+            "name": "CTF 03 solution",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/03_angr_symbolic_registers/solution.py",
+            "console": "integratedTerminal",
+            "args": ["03_angr_symbolic_registers/03_angr_symbolic_registers"]
+        }
+    ]
+}
