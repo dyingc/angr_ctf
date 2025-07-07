@@ -2,7 +2,7 @@
 """
 深入理解angr中AST的寄存器和内存存储机制
 演示"any bitvector-typed AST can be stored in registers or memory"的含义
-本代码可用于加深对：https://docs.angr.io/en/latest/core-concepts/states.html#review-reading-and-writing-memory-and-registers 中提到的 AST 部分的理解
+本代码可用于加深对：https://docs.angr.io/en/latest/core-concepts/solver.html#working-with-bitvectors 的理解
 """
 
 import warnings
