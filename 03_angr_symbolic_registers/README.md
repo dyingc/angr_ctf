@@ -109,6 +109,19 @@
     *   这行代码创建了一个名为 `eax_val` 的 32 位符号变量。这个变量是“自由”的，它可以代表任何 32 位的值。我们需要为 `eax`、`ebx` 和 `edx` 分别创建这样的变量。
 *   **`initial_state.regs.eax = eax_symbol`**：
     *   这是本挑战最关键的一步。我们将刚刚创建的符号变量 `eax_symbol` 赋值给初始状态的 `eax` 寄存器。angr 在后续的符号执行中，会跟踪这个符号变量如何被程序操作。
+*   **选择正确的起始地址 (`start_address`)**：
+    *   **为什么不从 `main` 函数的开头开始？** 因为这个挑战的核心是学习直接符号化寄存器。`get_user_input` 函数负责从用户处读取输入并将其加载到 `eax`、`ebx` 和 `edx`。
+    *   **最佳起点**：观察 `main` 函数的汇编代码，我们的目标是跳过 `scanf` 的模拟，直接从获取输入后的状态开始。
+        ```assembly
+        ; main function
+        ...
+        │ 0x08049550      e8adffffff                  call sym.get_user_input  ; CALL a subroutine to get user input
+        │ 0x08049555      8945f4                      mov dword [var_ch], eax  ; <-- OUR STARTING POINT to directly use registers
+        │ 0x08049558      895df0                      mov dword [var_10h], ebx
+        │ 0x0804955b      8955ec                      mov dword [var_14h], edx
+        ...
+        ```
+    *   通过在 `call sym.get_user_input` 指令 **之后** 的地址（`0x08049555`）开始符号执行，我们可以精确地模拟程序在获取完输入后的状态。这让我们能直接将符号变量注入寄存器，从而专注于挑战的核心任务。
 *   **寻找 `find` 和 `avoid` 地址**：
     *   与之前的挑战类似，您需要使用反汇编工具（如 `radare2`）来找到打印 "Good Job." 和 "Try again." 的代码地址，并将它们分别用作 `explore()` 方法的 `find` 和 `avoid` 参数。
 *   **`simulation.explore(find=find_address, avoid=avoid_address)`**：
@@ -133,7 +146,7 @@
     2   0x00002029 0x0804a029 10  11   .rodata ascii Try again.
     3   0x00002034 0x0804a034 9   10   .rodata ascii Good Job.
     ```
-    *   找到对 "Good Job." 的引用（`vaddr`: `0x0804a034`）
+    *   找到对 "Good Job." 的引用（`vaddr`: `0x0804a034`），这里是：`0x080495b8`
     ```bash
     $ r2 -q -c 'aaa 2>/dev/null; axt @0x0804a034' 03_angr_symbolic_registers 2>/dev/null
     main 0x80495b8 [STRN:r--] push str.Good_Job.
@@ -145,7 +158,7 @@
     │ 0x080495c5      b800000000                  mov eax, 0               ; moves data from src to dst
     │ 0x080495ca      8b4dfc                      mov ecx, dword [var_4h]  ; moves data from src to dst
     ```
-    *   类似的，找到对 "Try again." 的引用（`vaddr`: `0x0804a029`）
+    *   类似的，找到对 "Try again." 的引用（`vaddr`: `0x0804a029`），这里是：`0x080495a6`
     ```bash
     $ r2 -q -c 'aaa 2>/dev/null; axt @0x0804a029' 03_angr_symbolic_registers 2>/dev/null
     main 0x80495a6 [STRN:r--] push str.Try_again.
@@ -168,3 +181,61 @@
     *   脚本将输出需要输入到程序的三个十六进制密码。
 
 祝您在符号化寄存器的探索中学习愉快！
+
+---
+
+## 深度解析：解决方案的组合与隐式寄存器赋值
+
+在您成功解出三个独立的十六进制值后，可能会对两个问题感到好奇：
+
+1.  **如何将解组合成最终的输入？**
+2.  **为什么在 C 代码中看不到对 `eax`, `ebx`, `edx` 的直接赋值，但它们的值却被改变了？**
+
+### 1. 解决方案的组合
+
+您在 `solution.py` 中找到的三个解（`solution0`, `solution1`, `solution2`）需要被格式化为一个单一的字符串，并以空格分隔。这是因为程序中的 `scanf` 函数使用了 `"%x %x %x"` 这个格式化字符串来解析输入。
+
+正确的组合方式如下：
+```python
+# 将三个整数解格式化为由空格分隔的十六进制字符串
+solution = f"0x{solution0:08x} 0x{solution1:08x} 0x{solution2:08x}"
+print(solution)
+```
+当您将这个字符串输入程序时，`scanf` 会正确地解析它，并将三个值存入相应的内存位置。
+
+### 2. 隐式的寄存器赋值：一个自定义调用约定
+
+这是本挑战中最精妙的部分。您在 C 源码中找不到 `main` 函数直接给 `eax`, `ebx`, `edx` 赋值的语句，是因为这个过程是**隐式**的，通过一个**自定义的函数调用约定**完成。
+
+让我们分析一下汇编代码来揭示真相：
+
+**`get_user_input` 函数的结尾：**
+```assembly
+; sym.get_user_input
+...
+│ 0x08049519      e842fbffff                  call sym.imp.__isoc99_scanf ; scanf("%x %x %x", &var_ch, &var_10h, &var_14h) - three inputs in hex format, separated by spaces
+...
+│ 0x08049521      8b45f4                      mov eax, dword [var_ch]  ; 1. Load the first input into eax
+│ 0x08049524      8b55f0                      mov edx, dword [var_10h] ; 2. Load the second input into edx
+│ 0x08049527      89d3                        mov ebx, edx             ; 3. Copy the second input from edx to ebx
+│ 0x08049529      8b55ec                      mov edx, dword [var_14h] ; 4. Load the third input into edx
+│ 0x0804952c      90                          nop
+│ 0x0804952d      c9                          leave
+╰ 0x0804952e      c3                          ret                      ; 5. Return from function
+```
+`get_user_input` 函数在返回前，它的职责不仅仅是读取输入，还包括将这三个输入值加载到 `eax`、`ebx` 和 `edx` 寄存器中。这是一种非标准的“返回”多个值的方式。
+
+**`main` 函数调用之后：**
+```assembly
+; main function
+...
+│ 0x08049550      e8adffffff                  call sym.get_user_input  ; Call the function
+│ 0x08049555      8945f4                      mov dword [var_ch], eax  ; Get the value back from eax
+│ 0x08049558      895df0                      mov dword [var_10h], ebx ; Get the value back from ebx
+│ 0x0804955b      8955ec                      mov dword [var_14h], edx ; Get the value back from edx
+; ... then pass these values to complex_function_1, 2, 3
+```
+`main` 函数“知道”这个约定。在 `get_user_input` 返回后，它期望 `eax`、`ebx` 和 `edx` 中已经包含了需要的值，并立即将它们从寄存器复制到自己的局部变量中，以供后续使用。
+
+**总结：**
+赋值操作被巧妙地隐藏在了函数调用和返回的汇编指令中。这正是为什么我们的 `angr` 脚本选择在 `call sym.get_user_input` 指令之后开始执行，并直接在那个时间点注入符号化的寄存器——这完美地重现了程序执行的关键状态。
