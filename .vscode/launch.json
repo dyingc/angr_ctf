@@ -41,6 +41,14 @@
             "program": "${workspaceFolder}/03_angr_symbolic_registers/solution.py",
             "console": "integratedTerminal",
             "args": ["03_angr_symbolic_registers/03_angr_symbolic_registers"]
+        },
+        {
+            "name": "CTF 04 solution",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/04_angr_symbolic_stack/solution.py",
+            "console": "integratedTerminal",
+            "args": ["04_angr_symbolic_stack/04_angr_symbolic_stack"]
         }
     ]
 }
