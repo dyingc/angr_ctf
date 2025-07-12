@@ -126,11 +126,11 @@
 3.  **在内存中读写 (`state.memory.store`, `state.memory.load`)**
     *   **学习目标**：这是本挑战最核心的技能。学习如何使用 `state.memory.store(address, value, endness='Iend_LE')` 将一个符号变量（或具体值）写入到模拟内存的任意地址。同时，了解如何使用 `state.memory.load` 来读取值。
     *   **关键参数 `endness`**: 理解字节序（Endianness）的重要性。在 x86 架构中，数据以小端序（Little-Endian）存储，因此在写入多字节数据（如一个32位整数）时，必须指定 `endness='Iend_LE'` 以确保 angr 按正确的字节顺序存储它。
-    *   **推荐阅读**：[Memory and Registers](https://docs.angr.io/en/latest/core-concepts/memory.html) - 这篇文档详细介绍了如何与 angr 的模拟内存进行交互。
+    *   **推荐阅读**：[Low level interface for memory](https://docs.angr.io/en/latest/core-concepts/states.html#low-level-interface-for-memory) - 这篇文档详细介绍了如何与 angr 的模拟内存进行交互。
 
 4.  **通过标准输出检查状态 (`state.posix.dumps`)**
     *   **学习目标**：学习一种更灵活的、不依赖于特定代码地址的成功/失败判断方法。通过 `state.posix.dumps(sys.stdout.fileno())` 可以获取到该状态下模拟的标准输出内容。我们可以检查这个输出中是否包含 "Good Job." 或 "Try again." 字符串来引导符号执行的 `explore`。
-    *   **推荐阅读**：[Interacting with the Environment](https://docs.angr.io/en/latest/core-concepts/environment.html)
+    *   **推荐阅读**：[Exploring and analysing states](https://docs.angr.io/en/latest/appendix/cheatsheet.html#exploring-and-analysing-states)
 
 ## 技术要点详解
 
