@@ -35,7 +35,7 @@ def main(argv):
   # scanf 参数有关。
   # 鉴于我们不在 Angr 模拟中调用 scanf，我们应该从哪里开始？
   # (!)
-  start_address = ???
+  start_address = 0x08049392 # I think either way is fine. I chose starting from the instruction after add esp, 0x10: `mov eax, dword [var_ch]`
   initial_state = project.factory.blank_state(
     addr=start_address,
     add_options = { angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
@@ -72,8 +72,9 @@ def main(argv):
   # 处理 'scanf("%u")'，但不能处理 'scanf("%u %u")'。
   # 你可以复制粘贴下面的行或使用 Python 列表。
   # (!)
-  password0 = claripy.BVS('password0', ???)
-  ...
+  int_length_in_bits = 32
+  password0 = claripy.BVS('password0', int_length_in_bits)
+  password1 = claripy.BVS('password1', int_length_in_bits)
 
   # 这是困难的部分。我们需要弄清楚栈是什么样子的，至少
   # 要足够好地将我们的符号注入到我们想要的位置。为了做到
@@ -116,7 +117,7 @@ def main(argv):
   #            \---------------------/
   #
   # 找出有多少空间，并通过在推送密码位向量之前减少 esp 来分配必要的填充到栈中。
-  padding_length_in_bytes = ???  # :integer
+  padding_length_in_bytes = 0x8  # Ready to push password0 and then password1
   initial_state.regs.esp -= padding_length_in_bytes
 
   # 将变量推送到栈上。确保以正确的顺序推送它们！
@@ -127,18 +128,25 @@ def main(argv):
   # 这将把位向量推到栈上，并以正确的量增加 esp。
   # 你需要将多个位向量推到栈上。
   # (!)
-  initial_state.stack_push(???)  # :bitvector (claripy.BVS, claripy.BVV, claripy.BV)
-  ...
+  initial_state.stack_push(password0)  # :bitvector (claripy.BVS, claripy.BVV, claripy.BV)
+  initial_state.stack_push(password1)  # :bitvector (claripy.BVS, claripy.BVV, claripy.BV)
 
   simulation = project.factory.simgr(initial_state)
 
   def is_successful(state):
     stdout_output = state.posix.dumps(sys.stdout.fileno())
-    return ???
+    result = stdout_output.strip() == b'Good Job.' # and state.posix.dumps(sys.stdin.fileno()).strip() != b''
+    if result:
+      print("Found a successful state! Output was:", stdout_output)
+    if state.addr == 0x08049399: # ready to call complex_function0
+      return True  # We can stop here if we want, but let's keep going to see if we can get through both functions
+    if state.addr == 0x080493ab: # ready to call complex_function1
+      return True
+    return result
 
   def should_abort(state):
     stdout_output = state.posix.dumps(sys.stdout.fileno())
-    return ???
+    return stdout_output.strip() == b'Try again.'
 
   simulation.explore(find=is_successful, avoid=should_abort)
 
@@ -146,9 +154,9 @@ def main(argv):
     solution_state = simulation.found[0]
 
     solution0 = solution_state.solver.eval(password0)
-    ...
+    solution1 = solution_state.solver.eval(password1)
 
-    solution = ???
+    solution = f"{solution0} {solution1}"
     print(solution)
   else:
     raise Exception('Could not find the solution')
