@@ -138,10 +138,6 @@ def main(argv):
     result = stdout_output.strip() == b'Good Job.' # and state.posix.dumps(sys.stdin.fileno()).strip() != b''
     if result:
       print("Found a successful state! Output was:", stdout_output)
-    if state.addr == 0x08049399: # ready to call complex_function0
-      return True  # We can stop here if we want, but let's keep going to see if we can get through both functions
-    if state.addr == 0x080493ab: # ready to call complex_function1
-      return True
     return result
 
   def should_abort(state):
