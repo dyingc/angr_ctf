@@ -1,10 +1,9 @@
-# This challenge will be more challenging than the previous challenges that you
-# have encountered thus far. Since the goal of this CTF is to teach symbolic
-# execution and not how to construct stack frames, these comments will work you
-# through understanding what is on the stack.
+# 这个挑战将比你之前遇到的挑战更具挑战性。
+# 由于本次 CTF 的目标是教授符号执行，而不是如何构建栈帧，
+# 这些注释将引导你理解栈上的内容。
 #   ! ! !
-# IMPORTANT: Any addresses in this script aren't necessarily right! Dissassemble
-#            the binary yourself to determine the correct addresses!
+# 重要提示：此脚本中的任何地址不一定正确！请自行反汇编
+#            二进制文件以确定正确的地址！
 #   ! ! !
 
 import angr
@@ -15,28 +14,26 @@ def main(argv):
   path_to_binary = argv[1]
   project = angr.Project(path_to_binary)
 
-  # For this challenge, we want to begin after the call to scanf. Note that this
-  # is in the middle of a function.
+  # 对于这个挑战，我们希望在调用 scanf 之后开始。请注意，这
+  # 是在一个函数的中间。
   #
-  # This challenge requires dealing with the stack, so you have to pay extra
-  # careful attention to where you start, otherwise you will enter a condition
-  # where the stack is set up incorrectly. In order to determine where after
-  # scanf to start, we need to look at the dissassembly of the call and the
-  # instruction immediately following it:
-  #   sub    $0x4,%esp
-  #   lea    -0x10(%ebp),%eax
-  #   push   %eax
-  #   lea    -0xc(%ebp),%eax
-  #   push   %eax
-  #   push   $0x80489c3
-  #   call   8048370 <__isoc99_scanf@plt>
-  #   add    $0x10,%esp
-  # Now, the question is: do we start on the instruction immediately following
-  # scanf (add $0x10,%esp), or the instruction following that (not shown)?
-  # Consider what the 'add $0x10,%esp' is doing. Hint: it has to do with the
-  # scanf parameters that are pushed to the stack before calling the function.
-  # Given that we are not calling scanf in our Angr simulation, where should we
-  # start?
+  # 这个挑战需要处理栈，所以你必须格外
+  # 小心你的起始位置，否则你将进入一个
+  # 栈设置不正确的情况。为了确定在 scanf 之后从哪里开始，
+  # 我们需要查看调用的反汇编以及紧随其后的指令：
+  #   sub esp, 0x4
+  #   lea eax, [ebp-0x10]
+  #   push eax
+  #   lea eax, [ebp-0xc]
+  #   push eax
+  #   push 0x80489c3
+  #   call 0x8048370 ; __isoc99_scanf@plt
+  #   add esp, 0x10
+  # 现在，问题是：我们是在紧随 scanf 的指令 (add esp, 0x10) 处开始，
+  # 还是在紧随其后的指令 (未显示) 处开始？
+  # 考虑 'add esp, 0x10' 的作用。提示：它与在调用函数之前推送到栈上的
+  # scanf 参数有关。
+  # 鉴于我们不在 Angr 模拟中调用 scanf，我们应该从哪里开始？
   # (!)
   start_address = ???
   initial_state = project.factory.blank_state(
@@ -45,93 +42,90 @@ def main(argv):
                     angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS}
   )
 
-  # We are jumping into the middle of a function! Therefore, we need to account
-  # for how the function constructs the stack. The second instruction of the
-  # function is:
-  #   mov    %esp,%ebp
-  # At which point it allocates the part of the stack frame we plan to target:
-  #   sub    $0x18,%esp
-  # Note the value of esp relative to ebp. The space between them is (usually)
-  # the stack space. Since esp was decreased by 0x18
+  # 我们正在跳入一个函数的中间！因此，我们需要考虑
+  # 函数如何构建栈。函数的第二条指令是：
+  #   mov ebp, esp
+  # 此时它分配了我们计划定位的栈帧部分：
+  #   sub esp, 0x18
+  # 注意 esp 相对于 ebp 的值。它们之间的空间（通常）
+  # 是栈空间。由于 esp 减少了 0x18
   #
-  #        /-------- The stack --------\
-  # ebp -> |                           |
-  #        |---------------------------|
-  #        |                           |
-  #        |---------------------------|
-  #         . . . (total of 0x18 bytes)
-  #         . . . Somewhere in here is
-  #         . . . the data that stores
-  #         . . . the result of scanf.
-  # esp -> |                           |
-  #        \---------------------------/
+  #        /-------- 栈 --------\
+  # ebp -> |                     |
+  #        |---------------------|
+  #        |                     |
+  #        |---------------------|
+  #         . . . (总共 0x18 字节)
+  #         . . . 某个地方是
+  #         . . . 存储 scanf 结果的数据。
+  # esp -> |                     |
+  #        \---------------------/
   #
-  # Since we are starting after scanf, we are skipping this stack construction
-  # step. To make up for this, we need to construct the stack ourselves. Let us
-  # start by initializing ebp in the exact same way the program does.
+  # 由于我们是在 scanf 之后开始，我们跳过了这个栈构建
+  # 步骤。为了弥补这一点，我们需要自己构建栈。让我们
+  # 从以程序完全相同的方式初始化 ebp 开始。
   initial_state.regs.ebp = initial_state.regs.esp
 
-  # scanf("%u %u") needs to be replaced by injecting two bitvectors. The
-  # reason for this is that Angr does not (currently) automatically inject
-  # symbols if scanf has more than one input parameter. This means Angr can
-  # handle 'scanf("%u")', but not 'scanf("%u %u")'.
-  # You can either copy and paste the line below or use a Python list.
+  # scanf("%u %u") 需要通过注入两个位向量来替换。
+  # 目前，如果 scanf 有多个输入参数，
+  # Angr 不会自动注入符号。这意味着 Angr 可以
+  # 处理 'scanf("%u")'，但不能处理 'scanf("%u %u")'。
+  # 你可以复制粘贴下面的行或使用 Python 列表。
   # (!)
   password0 = claripy.BVS('password0', ???)
   ...
 
-  # Here is the hard part. We need to figure out what the stack looks like, at
-  # least well enough to inject our symbols where we want them. In order to do
-  # that, let's figure out what the parameters of scanf are:
-  #   sub    $0x4,%esp
-  #   lea    -0x10(%ebp),%eax
-  #   push   %eax
-  #   lea    -0xc(%ebp),%eax
-  #   push   %eax
-  #   push   $0x80489c3
-  #   call   8048370 <__isoc99_scanf@plt>
-  #   add    $0x10,%esp 
-  # As you can see, the call to scanf looks like this:
+  # 这是困难的部分。我们需要弄清楚栈是什么样子的，至少
+  # 要足够好地将我们的符号注入到我们想要的位置。为了做到
+  # 这一点，让我们弄清楚 scanf 的参数是什么：
+#   sub esp, 0x4
+#   lea eax, [ebp-0x10]
+#   push eax
+#   lea eax, [ebp-0xc]
+#   push eax
+#   push 0x80489c3
+#   call 0x8048370 ; __isoc99_scanf@plt
+#   add esp, 0x10
+  # 如你所见，对 scanf 的调用看起来像这样：
   # scanf(  0x80489c3,   ebp - 0xc,   ebp - 0x10  )
   #      format_string    password0    password1
-  #  From this, we can construct our new, more accurate stack diagram:
+  #  由此，我们可以构建我们新的、更准确的栈图：
   #
-  #            /-------- The stack --------\
-  # ebp ->     |          padding          |
-  #            |---------------------------|
-  # ebp - 0x01 |       more padding        |
-  #            |---------------------------|
-  # ebp - 0x02 |     even more padding     |
-  #            |---------------------------|
-  #                        . . .               <- How much padding? Hint: how
-  #            |---------------------------|      many bytes is password0?
-  # ebp - 0x0b |   password0, second byte  |
-  #            |---------------------------|
-  # ebp - 0x0c |   password0, first byte   |
-  #            |---------------------------|
-  # ebp - 0x0d |   password1, last byte    |
-  #            |---------------------------|
+  #            /-------- 栈 --------\
+  # ebp ->     |        填充        |
+  #            |---------------------|
+  # ebp - 0x01 |      更多填充       |
+  #            |---------------------|
+  # ebp - 0x02 |    甚至更多填充     |
+  #            |---------------------|
+  #                        . . .               <- 多少填充？提示：password0 有多少
+  #            |---------------------|            字节？
+  # ebp - 0x0b | password0, 第二字节 |
+  #            |---------------------|
+  # ebp - 0x0c | password0, 第一字节 |
+  #            |---------------------|
+  # ebp - 0x0d | password1, 最后一字节 |
+  #            |---------------------|
   #                        . . .
-  #            |---------------------------|
-  # ebp - 0x10 |   password1, first byte   |
-  #            |---------------------------|
+  #            |---------------------|
+  # ebp - 0x10 | password1, 第一字节 |
+  #            |---------------------|
   #                        . . .
-  #            |---------------------------|
-  # esp ->     |                           |
-  #            \---------------------------/
+  #            |---------------------|
+  # esp ->     |                     |
+  #            \---------------------/
   #
-  # Figure out how much space there is and allocate the necessary padding to
-  # the stack by decrementing esp before you push the password bitvectors.
+  # 找出有多少空间，并通过在推送密码位向量之前减少 esp 来分配必要的填充到栈中。
   padding_length_in_bytes = ???  # :integer
   initial_state.regs.esp -= padding_length_in_bytes
 
-  # Push the variables to the stack. Make sure to push them in the right order!
-  # The syntax for the following function is:
+  # 将变量推送到栈上。确保以正确的顺序推送它们！
+  # 以下函数的语法是：
   #
   # initial_state.stack_push(bitvector)
   #
-  # This will push the bitvector on the stack, and increment esp the correct
-  # amount. You will need to push multiple bitvectors on the stack.
+  # 这将把位向量推到栈上，并以正确的量增加 esp。
+  # 你需要将多个位向量推到栈上。
   # (!)
   initial_state.stack_push(???)  # :bitvector (claripy.BVS, claripy.BVV, claripy.BV)
   ...
