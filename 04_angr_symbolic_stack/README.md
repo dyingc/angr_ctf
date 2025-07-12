@@ -143,6 +143,10 @@
         0x08049224      add     esp, 0x10
         0x08049227      mov     eax, dword [ebp-0xc]  ; <-- OUR STARTING POINT
         ```
+    *   **栈内存分析**
+
+        ![栈分布](imgs/stack.png)
+
     *   `call` 指令会将返回地址压入栈中。`add esp, 0x10` 这条指令的作用是清理栈，它将栈指针 `esp` 增加 `0x10` (16) 字节，以移除之前为 `scanf` 压入的三个参数（格式字符串指针、`&user_int1`、`&user_int0`，在32位模式下总共12字节，对齐后为16字节）。
     *   由于我们不实际执行 `scanf`，我们也不需要执行这条清理指令。因此，最佳的起始地址是 `add esp, 0x10` **之后** 的那条指令。
 
@@ -172,6 +176,12 @@
     *   从汇编代码中我们可以清晰地看到：
         *   第一个输入 (`user_int0`) 存储在 `[ebp-0xc]`。
         *   第二个输入 (`user_int1`) 存储在 `[ebp-0x10]`。
+
+        我们的起点在 `add esp, 0x10` 之后的那条指令。该指令用于将 `var_ch`（`[ebp - 0xc]`）作为 `complex_function0` 的输入：
+
+        ![complex_function0 之前的汇编指令](imgs/assembly_before_complex_func0.png)
+
+        同时，因为我们只需要将 `var_ch` 和 `var_10h` 分别作为 `complex_function0` 和 `complex_function0` 的参数压栈，而这两个参数的位置又只与 `ebp` 相关，因此，其实我们对于在 `var_10h` 的栈顶（地址更小的部分）是什么，其实也没有那么关心。最简单的做法就是，给 `ebp` 一个值，然后，计算出 `var_ch` 和 `var_10h` 的地址，并把这两个地址的值作为符号变量。
 
 *   **将符号变量写入栈**:
     *   **创建符号变量**:
