@@ -9,6 +9,7 @@
 import angr
 import claripy
 import sys
+from angr.sim_state import SimState
 
 def main(argv):
   path_to_binary = argv[1]
@@ -36,7 +37,8 @@ def main(argv):
   # 鉴于我们不在 Angr 模拟中调用 scanf，我们应该从哪里开始？
   # (!)
   start_address = 0x08049392 # I think either way is fine. I chose starting from the instruction after add esp, 0x10: `mov eax, dword [var_ch]`
-  initial_state = project.factory.blank_state(
+  start_address = 0x0804938f # Or starting from the instruction `add esp, 0x10` itself. Because we directly manipulate the stack without using esp, no need to adjust esp again as long as the stack space is enough to hold the inputs (so the `add esp, 0x10` won't overwrite our two password inputs).
+  initial_state: SimState = project.factory.blank_state(
     addr=start_address,
     add_options = { angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
                     angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS}
@@ -117,7 +119,7 @@ def main(argv):
   #            \---------------------/
   #
   # 找出有多少空间，并通过在推送密码位向量之前减少 esp 来分配必要的填充到栈中。
-  padding_length_in_bytes = 0x8  # Ready to push password0 and then password1
+  padding_length_in_bytes = 0x100  # As long as the stack space is enough to hold password0 and password1, it should be fine. I chose 0x100 arbitrarily.
   initial_state.regs.esp -= padding_length_in_bytes
 
   # 将变量推送到栈上。确保以正确的顺序推送它们！
@@ -128,8 +130,9 @@ def main(argv):
   # 这将把位向量推到栈上，并以正确的量增加 esp。
   # 你需要将多个位向量推到栈上。
   # (!)
-  initial_state.stack_push(password0)  # :bitvector (claripy.BVS, claripy.BVV, claripy.BV)
-  initial_state.stack_push(password1)  # :bitvector (claripy.BVS, claripy.BVV, claripy.BV)
+  # We use direct stack memory write instead of stack_push, because stack_push will adjust esp, which is not what we want here.
+  initial_state.mem[initial_state.regs.ebp - 0xc].uint32_t = password0  # password0 is at ebp - 0xc
+  initial_state.mem[initial_state.regs.ebp - 0x10].uint32_t = password1  # password1 is at ebp - 0x10
 
   simulation = project.factory.simgr(initial_state)
 
