@@ -49,6 +49,17 @@
             "program": "${workspaceFolder}/04_angr_symbolic_stack/solution.py",
             "console": "integratedTerminal",
             "args": ["04_angr_symbolic_stack/04_angr_symbolic_stack"]
+        },
+        {
+            "name": "Python: Debug RE Unittests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "unittest",
+            "args": [
+                "ai_agent/tests/test_reverse_engineering.py"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
         }
     ]
 }

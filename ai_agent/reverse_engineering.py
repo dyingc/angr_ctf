@@ -13,7 +13,7 @@ import concurrent.futures
 from ai_agent import r2_utils as r2u # Import the new r2_utils module
 
 # Load configuration from YAML file
-with open("config.yaml") as f:
+with open("ai_agent/config.yaml") as f:
     config = yaml.safe_load(f)
 
 # Get the list of functions in a binary, using radare2
@@ -42,9 +42,9 @@ def get_function_list(binary_path:str, exclude_builtins:bool=True)->Dict[str, An
     func_list = json.loads(functions)
     # Filter out built-in functions if needed
     if exclude_builtins:
-        func_list = [f for f in func_list if not f["name"].startswith("sym.")]
+        func_list = [f for f in func_list if not (f["name"].startswith("sym.imp.") or f["name"].startswith("fcn."))]
 
-    shortented_func_list = [{"offset": func["offset"],
+    shortented_func_list = [{"offset": func["addr"],
                   "name": func["name"],
                   "size": func["realsz"],
                   "file": func.get("file", ""),
