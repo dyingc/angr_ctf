@@ -10,6 +10,7 @@ import traceback
 from io import StringIO
 import contextlib
 import concurrent.futures
+from ai_agent import r2_utils as r2u # Import the new r2_utils module
 
 # Load configuration from YAML file
 with open("config.yaml") as f:
@@ -25,15 +26,15 @@ class FunctionListToolInput(BaseModel):
 def get_function_list(binary_path:str, exclude_builtins:bool=True)->Dict[str, Any]:
     # Open the binary in radare2
     r2 = r2pipe.open(binary_path)
-    
+
     # Perform analysis (equivalent to "aaa" command)
     r2.cmd("aaa")
-    
+
     # Get function list (equivalent to "afl" command)
     functions = r2.cmd("aflj")  # JSON output
 
     # Parse JSON output
-    if not functions:
+    if not functions or not isinstance(functions, str):
         return {"result": [],
                 "need_refine": False,
                 "prompts": []}
@@ -84,14 +85,16 @@ class DisassemblyToolInput(BaseModel):
 def get_disassembly(binary_path:str, function_name:str)->Dict[str, Any]:
     # Open the binary in radare2
     r2 = r2pipe.open(binary_path)
-    
+
     # Perform analysis (equivalent to "aaa" command)
     r2.cmd("e scr.color=0; aaa")
-    
+
     # Get disassembly of the function (equivalent to "pdf @ function_name" command)
     disassembly = r2.cmd(f"pdfj @ {function_name}")
+    if not disassembly or not isinstance(disassembly, str):
+        return {"result": "", "need_refine": False, "prompts": []}
     disassembly = json.loads(disassembly)
-    
+
     # Close the r2pipe session
     r2.quit()
 
@@ -121,15 +124,24 @@ class PseudoCodeToolInput(BaseModel):
     binary_path: str = Field(..., description="The path to the binary file.")
     function_name: str = Field(..., description="The name of the function to get pseudo C code.")
 
-def get_pseudo_code(binary_path:str, function_name:str)-> str:
+def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]: # Changed return type to Dict[str, Any]
     # Open the binary in radare2
     r2 = r2pipe.open(binary_path)
-    
+
     # Perform analysis (equivalent to "aaa" command)
     r2.cmd("e scr.color=0; aaa")
-    
+
     # Get pseudo code of the function (equivalent to "pdg @ function_name" command)
     pseudo_code = r2.cmd(f"pdgj @ {function_name}")
+    if not pseudo_code or not isinstance(pseudo_code, str):
+        return {
+            "result": "",
+            "need_refine": True,
+            "prompts": [
+                config["tool_messages"]["get_pseudo_code_messages"]["system"],
+                config["tool_messages"]["get_pseudo_code_messages"]["task"].format(original_pseudo_code="")
+            ]
+        }
     pseudo_code = json.loads(pseudo_code)
 
     # Close the r2pipe session
@@ -174,7 +186,7 @@ def execute_code_with_timeout(code, local_vars, timeout):
     """Execute code with timeout using ThreadPoolExecutor."""
     def exec_target():
         exec(code, local_vars, local_vars)  # Use shared environment for both globals and locals
-        
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(exec_target)
         try:
@@ -185,64 +197,66 @@ def execute_code_with_timeout(code, local_vars, timeout):
 def execute_python_code(code: str, timeout: int = 7_200) -> Dict[str, Any]:
     """
     Execute Python code passed as a string and return the output.
-    
+
     Args:
         code: A string containing Python code to execute
         timeout: Maximum execution time in seconds before timing out
-        
+
     Returns:
         The output of the executed code as a string
     """
+    result_content = "" # Initialize result_content
     try:
         # Create a dictionary for local variables
         local_vars = {}
         hit_error = False
-        
+
         # Capture stdout during execution
         with capture_stdout() as output:
             # Execute the code with timeout
             try:
                 # Check for syntax errors before execution
                 compile(code, '<string>', 'exec')
-                
+
                 # Execute with timeout using ThreadPoolExecutor
                 execute_code_with_timeout(code, local_vars, timeout)
-                
+
             except TimeoutError as e:
                 hit_error = True
                 result_content = f"{str(e)}\nThe given code is running too slowly. Please check the code and try again."
             except SyntaxError as e:
                 hit_error = True
                 # For syntax errors, we can get line and position information directly
-                result_content =  f"SyntaxError while calling the given code: {str(e.msg)} (line {e.lineno}, position {e.offset})\n" + \
-                       f"```\n{e.text}\n{' ' * (e.offset-1)}^\n```\nPlease check the code and try again." 
+                offset_str = str(e.offset) if e.offset is not None else "N/A"
+                result_content =  f"SyntaxError while calling the given code: {str(e.msg)} (line {e.lineno}, position {offset_str})\n" + \
+                       f"```\n{e.text}\n{' ' * (e.offset-1) if e.offset is not None else ''}^\n```\nPlease check the code and try again."
             except Exception as e:
                 # Get the full traceback
                 full_tb = traceback.format_exc()
-                
+
                 # Extract just the relevant parts (error type, message, and code context)
                 tb_lines = full_tb.split('\n')
                 cleaned_tb = []
-                
+
                 # Find where the "<string>" part starts (the executed code)
                 for i, line in enumerate(tb_lines):
                     if '<string>' in line:
                         # Add this line and all subsequent lines
                         cleaned_tb = tb_lines[i:]
                         break
-                
+
                 # If we couldn't find the specific part, use the last few lines which typically
                 # contain the exception type and message
                 if not cleaned_tb and len(tb_lines) >= 3:
                     cleaned_tb = tb_lines[-3:]
-                
+
                 hit_error = True
                 result_content = f"Error during execution:\n" + '\n'.join(cleaned_tb) + "\nPlease check the code and try again."
 
         if not hit_error:
             # Get captured output
             result = output.getvalue()
-            
+
             # If there's no stdout but there are return values in local variables,
             # add them to the result
             if not result.strip() and local_vars:
@@ -252,9 +266,9 @@ def execute_python_code(code: str, timeout: int = 7_200) -> Dict[str, Any]:
                     result += "\nLocal variables after execution:\n"
                     for var in potential_results:
                         result += f"{var}: {repr(local_vars[var])}\n"
-            
+
             result_content = result.strip() if result.strip() else "Code executed successfully with no output."
-    
+
     except Exception as e:
         result_content = f"Error setting up execution environment: {str(e)}"
 
@@ -264,7 +278,7 @@ def execute_python_code(code: str, timeout: int = 7_200) -> Dict[str, Any]:
         "prompts": []
     }
     return final_result
-    
+
 
 # Create the python_interpreter_tool
 python_interpreter_tool = StructuredTool.from_function(
@@ -272,6 +286,93 @@ python_interpreter_tool = StructuredTool.from_function(
     name="execute_python_code",
     description="Execute Python code passed as a string and return the output.",
     args_schema=PythonInterpreterToolInput,
+)
+
+# --- New Tools based on r2_utils ---
+
+# get_call_graph
+class CallGraphToolInput(BaseModel):
+    binary_path: str = Field(..., description="The path to the binary file.")
+    function_name: Optional[str] = Field(None, description="The name of the function to generate the call graph for. If None, a global call graph is generated.")
+    depth: int = Field(3, description="The depth of the call graph to generate for a specific function.")
+
+def _get_call_graph_tool_impl(tool_input: CallGraphToolInput) -> Dict[str, Any]:
+    result = r2u.get_call_graph(tool_input.binary_path, tool_input.function_name, tool_input.depth)
+    return {"result": result, "need_refine": False, "prompts": []}
+
+call_graph_tool = StructuredTool.from_function(
+    _get_call_graph_tool_impl,
+    name="get_call_graph",
+    description="Generates a call graph for a binary using radare2. Can be global or for a specific function with depth.",
+    args_schema=CallGraphToolInput,
+)
+
+# get_cfg_basic_blocks
+class CFGBasicBlocksToolInput(BaseModel):
+    binary_path: str = Field(..., description="The path to the binary file.")
+    function_name: str = Field(..., description="The name of the function to get basic blocks for.")
+
+def _get_cfg_basic_blocks_tool_impl(tool_input: CFGBasicBlocksToolInput) -> Dict[str, Any]:
+    result = r2u.get_cfg_basic_blocks(tool_input.binary_path, tool_input.function_name)
+    return {"result": result, "need_refine": False, "prompts": []}
+
+cfg_basic_blocks_tool = StructuredTool.from_function(
+    _get_cfg_basic_blocks_tool_impl,
+    name="get_cfg_basic_blocks",
+    description="Retrieves basic blocks information for a given function, including boundaries and control flow information.",
+    args_schema=CFGBasicBlocksToolInput,
+)
+
+# get_strings
+class GetStringsToolInput(BaseModel):
+    binary_path: str = Field(..., description="The path to the binary file.")
+    min_length: int = Field(4, description="Minimum length of strings to extract.")
+
+def _get_strings_tool_impl(tool_input: GetStringsToolInput) -> Dict[str, Any]:
+    result = r2u.get_strings(tool_input.binary_path, tool_input.min_length)
+    return {"result": result, "need_refine": False, "prompts": []}
+
+get_strings_tool = StructuredTool.from_function(
+    _get_strings_tool_impl,
+    name="get_strings",
+    description="Extracts printable strings from a binary using radare2.",
+    args_schema=GetStringsToolInput,
+)
+
+# search_string_refs
+class SearchStringRefsToolInput(BaseModel):
+    binary_path: str = Field(..., description="The path to the binary file.")
+    query: str = Field(..., description="The substring or regex to search for.")
+    ignore_case: bool = Field(True, description="Whether to ignore case during search.")
+    max_refs: int = Field(50, description="Maximum number of references to return per string.")
+
+def _search_string_refs_tool_impl(tool_input: SearchStringRefsToolInput) -> Dict[str, Any]:
+    result = r2u.search_string_refs(tool_input.binary_path, tool_input.query, tool_input.ignore_case, tool_input.max_refs)
+    return {"result": result, "need_refine": False, "prompts": []}
+
+search_string_refs_tool = StructuredTool.from_function(
+    _search_string_refs_tool_impl,
+    name="search_string_refs",
+    description="Searches for string references in a binary based on a query (substring or regex) using radare2.",
+    args_schema=SearchStringRefsToolInput,
+)
+
+# emulate_function
+class EmulateFunctionToolInput(BaseModel):
+    binary_path: str = Field(..., description="The path to the binary file.")
+    function_name: str = Field(..., description="The name of the function to emulate.")
+    max_steps: int = Field(100, description="Maximum number of emulation steps.")
+    timeout: int = Field(60, description="Maximum execution time in seconds before timeout.")
+
+def _emulate_function_tool_impl(tool_input: EmulateFunctionToolInput) -> Dict[str, Any]:
+    result = r2u.emulate_function(tool_input.binary_path, tool_input.function_name, tool_input.max_steps, tool_input.timeout)
+    return {"result": result, "need_refine": False, "prompts": []}
+
+emulate_function_tool = StructuredTool.from_function(
+    _emulate_function_tool_impl,
+    name="emulate_function",
+    description="Emulates a function for a specified number of steps and returns register states and trace using radare2's ESIL.",
+    args_schema=EmulateFunctionToolInput,
 )
 
 # Define the input schema for the execute_os_command tool
@@ -299,7 +400,7 @@ def execute_os_command(command: str, timeout: int = 60) -> Dict[str, Any]:
             capture_output=True,
             text=True
         )
-        
+
         # Prepare the result dictionary
         output = {
             "stdout": result.stdout,
@@ -307,13 +408,13 @@ def execute_os_command(command: str, timeout: int = 60) -> Dict[str, Any]:
             "returncode": result.returncode,
             "success": result.returncode == 0
         }
-        
+
         return {
             "result": output,
             "need_refine": False,
             "prompts": []
         }
-    
+
     except subprocess.TimeoutExpired:
         return {
             "result": {
@@ -371,14 +472,14 @@ def do_internal_inference(
     known_facts: List[str],
     reasoning_method: str,
     arguments: List[str],
-    inferred_insights: List[str] = None,
+    inferred_insights: List[str] = Field(default_factory=list), # Changed default to empty list
     validation_check: Optional[str] = None,
 ) -> InternalInferenceToolInput:
     return InternalInferenceToolInput(
         known_facts=known_facts,
         reasoning_method=reasoning_method,
         arguments=arguments,
-        inferred_insights=inferred_insights,
+        inferred_insights=inferred_insights if inferred_insights is not None else [], # Ensure it's a list
         validation_check=validation_check,
     )
 
