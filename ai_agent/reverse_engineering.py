@@ -21,7 +21,7 @@ with open("ai_agent/config.yaml") as f:
 
 class FunctionListToolInput(BaseModel):
     binary_path: str = Field(..., description="The path to the binary file.")
-    exclude_builtins: bool = Field(True, description="Whether to exclude the system or C-library built-in functions, usually starts with \"sym.\".")
+    exclude_builtins: bool = Field(True, description="Whether to exclude the system or C-library built-in functions, usually starts with \"sym.\"")
 
 def get_function_list(binary_path:str, exclude_builtins:bool=True)->Dict[str, Any]:
     # Open the binary in radare2
@@ -44,23 +44,27 @@ def get_function_list(binary_path:str, exclude_builtins:bool=True)->Dict[str, An
     if exclude_builtins:
         func_list = [f for f in func_list if not (f["name"].startswith("sym.imp.") or f["name"].startswith("fcn."))]
 
-    shortented_func_list = [{"offset": func["addr"],
+    shortented_func_list = [{"offset": func["offset"],
                   "name": func["name"],
-                  "size": func["realsz"],
+                  "size": func["size"],
+                  "realsz": func.get("realsz", func["size"]),
                   "file": func.get("file", ""),
-                  "signature": func["signature"]} for func in func_list]
+                  "signature": func.get("signature", "N/A")} for func in func_list]
 
     # Get the list of calling functions of each function
     for func in shortented_func_list:
         calls = r2.cmd(f"axtj @ {func['offset']}")
         if calls:
-            calls = json.loads(calls)
-            func["called_by"] = ', '.join([c['fcn_name'] for c in calls])
+            try:
+                calls_data = json.loads(calls)
+                # Correctly access the function name from the reference
+                func["called_by"] = ', '.join([c.get('fcn_name', 'N/A') for c in calls_data])
+            except json.JSONDecodeError:
+                func["called_by"] = ''
         else:
             func["called_by"] = ''
     # Close the r2pipe session
     r2.quit()
-    # shortented_func_list = '\n'.join([f"{func['offset']}\t{func['name']}\t{func['size']}\t{func['file']}\t{func['signature']}\t{func['called_by']}" for func in shortented_func_list])
     result = {"result": shortented_func_list,
               "need_refine": False,
               "prompts": []}
@@ -90,15 +94,20 @@ def get_disassembly(binary_path:str, function_name:str)->Dict[str, Any]:
     r2.cmd("e scr.color=0; aaa")
 
     # Get disassembly of the function (equivalent to "pdf @ function_name" command)
-    disassembly = r2.cmd(f"pdfj @ {function_name}")
-    if not disassembly or not isinstance(disassembly, str):
+    disassembly_json = r2.cmd(f"pdfj @ {function_name}")
+    if not disassembly_json or not isinstance(disassembly_json, str):
         return {"result": "", "need_refine": False, "prompts": []}
-    disassembly = json.loads(disassembly)
+    
+    try:
+        disassembly = json.loads(disassembly_json)
+    except json.JSONDecodeError:
+        return {"result": "Failed to parse disassembly JSON.", "need_refine": False, "prompts": []}
 
     # Close the r2pipe session
     r2.quit()
 
-    disa_str = '\n'.join([f"{d['offset']}\t{d['disasm']}" for d in disassembly.get('ops')])
+    # The key for address is 'offset', and for instruction is 'opcode' or 'disasm'
+    disa_str = '\n'.join([f"{d.get('offset', d.get('addr', 'N/A'))}\t{d.get('disasm', d.get('opcode', 'N/A'))}" for d in disassembly.get('ops', [])])
 
     return {"result": disa_str,
             "need_refine": False,
@@ -132,22 +141,26 @@ def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]: # Chan
     r2.cmd("e scr.color=0; aaa")
 
     # Get pseudo code of the function (equivalent to "pdg @ function_name" command)
-    pseudo_code = r2.cmd(f"pdgj @ {function_name}")
-    if not pseudo_code or not isinstance(pseudo_code, str):
-        return {
-            "result": "",
-            "need_refine": True,
-            "prompts": [
-                config["tool_messages"]["get_pseudo_code_messages"]["system"],
-                config["tool_messages"]["get_pseudo_code_messages"]["task"].format(original_pseudo_code="")
-            ]
-        }
-    pseudo_code = json.loads(pseudo_code)
+    try:
+        pseudo_code_json = r2.cmd(f"pdgj @ {function_name}")
+        if not pseudo_code_json or not isinstance(pseudo_code_json, str):
+            return {
+                "result": "Failed to get pseudo code. The command returned empty.",
+                "need_refine": True,
+                "prompts": []
+            }
+        pseudo_code = json.loads(pseudo_code_json)
+        pcode_str = pseudo_code.get('code', "No code found in pseudo-code output.")
 
-    # Close the r2pipe session
-    r2.quit()
-
-    pcode_str = pseudo_code.get('code')
+    except RuntimeError as e:
+        pcode_str = f"Failed to get pseudo code due to a runtime error: {e}. This might be due to issues with the Ghidra decompiler plugin."
+    except json.JSONDecodeError:
+        pcode_str = "Failed to parse pseudo-code JSON. The decompiler might have produced invalid output."
+    except Exception as e:
+        pcode_str = f"An unexpected error occurred while getting pseudo code: {e}"
+    finally:
+        # Close the r2pipe session
+        r2.quit()
 
     return {
         "result": pcode_str,
@@ -161,8 +174,7 @@ def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]: # Chan
 pseudo_code_tool = StructuredTool.from_function(
     get_pseudo_code,
     name="get_pseudo_code",
-    description="Get pseudo C code of a specific function from a binary, \
-using radare2's Ghidra plugin. Dependancies: radare2 with Ghidra plugin installed.",
+    description="Get pseudo C code of a specific function from a binary, \nusing radare2's Ghidra plugin. Dependancies: radare2 with Ghidra plugin installed.",
     args_schema=PseudoCodeToolInput,
 )
 
@@ -365,8 +377,28 @@ class EmulateFunctionToolInput(BaseModel):
     timeout: int = Field(60, description="Maximum execution time in seconds before timeout.")
 
 def _emulate_function_tool_impl(tool_input: EmulateFunctionToolInput) -> Dict[str, Any]:
-    result = r2u.emulate_function(tool_input.binary_path, tool_input.function_name, tool_input.max_steps, tool_input.timeout)
-    return {"result": result, "need_refine": False, "prompts": []}
+    emulation_result = r2u.emulate_function(
+        tool_input.binary_path,
+        tool_input.function_name,
+        tool_input.max_steps,
+        tool_input.timeout
+    )
+
+    # Add a human-readable summary to the result for better interpretation,
+    # while preserving the detailed raw output.
+    if "error" in emulation_result:
+        summary = f"Emulation failed: {emulation_result['error']}"
+    else:
+        status = emulation_result.get('status', 'unknown').replace('_', ' ').capitalize()
+        summary = f"Emulation finished with status: {status}."
+
+    # Combine the summary with the detailed data for a comprehensive output.
+    final_output = {
+        "summary": summary,
+        "details": emulation_result
+    }
+
+    return {"result": final_output, "need_refine": False, "prompts": []}
 
 emulate_function_tool = StructuredTool.from_function(
     _emulate_function_tool_impl,

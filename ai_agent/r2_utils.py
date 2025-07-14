@@ -53,12 +53,12 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None, depth:
         try:
             if function_name:
                 # Get call graph for a specific function with depth
-                # agCdj: call graph with depth, JSON output
-                graph_json = r2.cmd(f"agCdj {depth} @ {function_name}")
+                # agcj: call graph with depth, JSON output
+                graph_json = r2.cmd(f"agcj {depth} @ {function_name}")
             else:
                 # Get global call graph
-                # agfj: function call graph, JSON output
-                graph_json = r2.cmd("agfj")
+                # agCj: global call graph, JSON output
+                graph_json = r2.cmd("agCj")
 
             if not graph_json:
                 return {"nodes": [], "edges": []}
@@ -81,10 +81,47 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None, depth:
                     # This part might need refinement based on exact agfj output structure for edges
                     # For simplicity, we'll just list nodes for now, or use a different r2 command if needed for edges
                     # A more robust approach for global graph might involve parsing 'agf' and then 'axf' for calls
-            
+
             return {"nodes": nodes, "edges": edges}
         finally:
             r2.quit()
+
+def _determine_block_type(block: Dict[str, Any]) -> str:
+    """
+    Determines the type of a basic block based on its jump/fail fields.
+
+    Args:
+        block: Basic block data from afbj command
+
+    Returns:
+        String representing block type: "entry", "cond", "uncond", "ret", "call"
+    """
+    inputs = block.get("inputs", 0)
+    has_jump = "jump" in block and block["jump"]
+    has_fail = "fail" in block and block["fail"]
+
+    # Entry block: no inputs
+    if inputs == 0:
+        return "entry"
+
+    # Conditional jump: has both jump and fail targets
+    if has_jump and has_fail:
+        return "cond"
+
+    # Unconditional jump: has only jump target
+    if has_jump and not has_fail:
+        return "uncond"
+
+    # Return block: no jump or fail targets
+    if not has_jump and not has_fail:
+        return "ret"
+
+    # Call block: typically has fail target (fall-through)
+    if has_fail and not has_jump:
+        return "call"
+
+    return "unknown"
+
 
 def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[str, Any]]:
     """
@@ -102,40 +139,100 @@ def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[str,
     with r2_lock:
         r2 = _open_r2pipe(binary_path)
         try:
-            # Get basic block information (afbj: function basic blocks, JSON output)
+            # Verify function exists
+            functions = r2.cmdj("aflj")
+            if not functions or not any(f.get("name") == function_name for f in functions):
+                raise ValueError(f"Function '{function_name}' not found in binary")
+
+            # Get basic block information
             blocks_json = r2.cmd(f"afbj @ {function_name}")
-            if not blocks_json:
+            if not blocks_json or blocks_json.strip() == "[]":
                 return []
-            blocks_data = json.loads(blocks_json)
 
-            # Get control flow graph edges (agj: graph, JSON output)
-            edges_json = r2.cmd(f"agj @ {function_name}")
-            edges_data = json.loads(edges_json) if edges_json else []
+            try:
+                blocks_data = json.loads(blocks_json)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Failed to parse basic blocks JSON: {e}")
 
-            # Map block addresses to their data for easier lookup
-            block_map = {b["offset"]: b for b in blocks_data}
+            # Process blocks and determine successors directly from afbj data
+            formatted_blocks = []
 
-            # Add successors to each block
-            for edge in edges_data:
-                src_addr = edge["from"]
-                dst_addr = edge["to"]
-                if src_addr in block_map:
-                    if "succ" not in block_map[src_addr]:
-                        block_map[src_addr]["succ"] = []
-                    block_map[src_addr]["succ"].append(dst_addr)
+            for block in blocks_data:
+                # Determine block type based on jump/fail fields
+                block_type = _determine_block_type(block)
 
-            # Format output
-            formatted_blocks = [
-                {
-                    "offset": block["offset"],
+                # Extract successors from jump/fail fields
+                successors = []
+                if "jump" in block and block["jump"]:
+                    successors.append(block["jump"])
+                if "fail" in block and block["fail"]:
+                    successors.append(block["fail"])
+
+                formatted_block = {
+                    "offset": block["addr"],
                     "size": block["size"],
-                    "type": block.get("type", "unknown"), # e.g., "entry", "cond", "uncond"
-                    "succ": block.get("succ", [])
-                } for block in blocks_data
-            ]
+                    "type": block_type,
+                    "succ": successors,
+                    "inputs": block.get("inputs", 0),
+                    "outputs": block.get("outputs", 0),
+                    "ninstr": block.get("ninstr", 0)
+                }
+                formatted_blocks.append(formatted_block)
+
             return formatted_blocks
+
+        except Exception as e:
+            raise RuntimeError(f"Error analyzing function '{function_name}': {e}")
         finally:
             r2.quit()
+
+
+def analyze_function_cfg(binary_path: str, function_name: str) -> Dict[str, Any]:
+    """
+    Comprehensive CFG analysis for a function.
+
+    Args:
+        binary_path: Path to binary file
+        function_name: Function name to analyze
+
+    Returns:
+        Dictionary containing CFG analysis results
+    """
+    blocks = get_cfg_basic_blocks(binary_path, function_name)
+
+    if not blocks:
+        return {"blocks": [], "stats": {}}
+
+    # Calculate CFG statistics
+    total_blocks = len(blocks)
+    total_instructions = sum(b["ninstr"] for b in blocks)
+    total_size = sum(b["size"] for b in blocks)
+
+    # Find entry and exit blocks
+    entry_blocks = [b for b in blocks if b["type"] == "entry"]
+    exit_blocks = [b for b in blocks if b["type"] == "ret"]
+
+    # Calculate complexity metrics
+    edges = sum(len(b["succ"]) for b in blocks)
+    cyclomatic_complexity = edges - total_blocks + 2
+
+    stats = {
+        "total_blocks": total_blocks,
+        "total_instructions": total_instructions,
+        "total_size": total_size,
+        "entry_blocks": len(entry_blocks),
+        "exit_blocks": len(exit_blocks),
+        "edges": edges,
+        "cyclomatic_complexity": cyclomatic_complexity,
+        "avg_block_size": total_size / total_blocks if total_blocks > 0 else 0
+    }
+
+    return {
+        "blocks": blocks,
+        "stats": stats,
+        "entry_points": [b["offset"] for b in entry_blocks],
+        "exit_points": [b["offset"] for b in exit_blocks]
+    }
 
 def get_strings(binary_path: str, min_length: int = 4) -> List[Dict[str, Any]]:
     """
@@ -222,6 +319,7 @@ def _emulate_function_target(r2_instance, function_name, max_steps, result_queue
 
     This function is intended to be run in a separate thread. It initializes
     ESIL, steps through the function's instructions, and records the trace.
+    It reports the status of the emulation: 'completed', 'max_steps_reached', or 'error'.
 
     Args:
         r2_instance: An active r2pipe instance.
@@ -232,18 +330,24 @@ def _emulate_function_target(r2_instance, function_name, max_steps, result_queue
     try:
         r2_instance.cmd(f"aeim @ {function_name}") # Initialize ESIL emulation at function entry
         trace = []
+        emulation_status = "max_steps_reached"  # Default status if loop finishes naturally
+
         for step in range(max_steps):
             # Get current register state (aerj: ESIL registers, JSON output)
             regs_json = r2_instance.cmd("aerj")
             current_regs = json.loads(regs_json) if regs_json else {}
 
             # Get current instruction (pdj 1 @ PC)
-            current_pc = current_regs.get("pc")
+            # The program counter register name is architecture-dependent.
+            # We check in order of specificity: rip (x64), eip (x86), then pc (generic).
+            current_pc = current_regs.get("rip") or current_regs.get("eip") or current_regs.get("pc")
             if current_pc is None:
-                break # PC not found, something went wrong
+                # If no program counter is found, emulation cannot continue. This is a critical error.
+                result_queue.put({"error": "Emulation failed: Program Counter (PC) could not be determined."})
+                return
 
             disasm_json = r2_instance.cmd(f"pdj 1 @ {current_pc}")
-            current_op = json.loads(disasm_json)[0] if disasm_json else {}
+            current_op = json.loads(disasm_json)[0] if disasm_json and disasm_json.strip().startswith('[') else {}
 
             trace.append({
                 "step": step,
@@ -258,11 +362,16 @@ def _emulate_function_target(r2_instance, function_name, max_steps, result_queue
             # Check if emulation finished (e.g., hit ret or invalid instruction)
             # This is a heuristic, a more robust check might involve analyzing ESIL flags or state
             if r2_instance.cmd("aerj").strip() == "{}": # If registers are empty, emulation might have stopped
+                emulation_status = "completed"
                 break
 
         final_regs_json = r2_instance.cmd("aerj")
         final_regs = json.loads(final_regs_json) if final_regs_json else {}
-        result_queue.put({"final_regs": final_regs, "trace": trace})
+        result_queue.put({
+            "status": emulation_status,
+            "final_regs": final_regs,
+            "trace": trace
+        })
     except Exception as e:
         result_queue.put({"error": str(e)})
 
@@ -280,7 +389,7 @@ def emulate_function(binary_path: str, function_name: str, max_steps: int = 100,
         timeout: The maximum time in seconds to wait for the emulation to complete.
 
     Returns:
-        A dictionary containing the 'final_regs' and instruction 'trace',
+        A dictionary containing the 'status', 'final_regs', and instruction 'trace',
         or an 'error' message if the emulation failed or timed out.
     """
     with r2_lock: # Acquire lock before opening r2pipe
@@ -290,12 +399,13 @@ def emulate_function(binary_path: str, function_name: str, max_steps: int = 100,
         future = executor.submit(_emulate_function_target, r2, function_name, max_steps, result_queue)
 
         try:
+            # Block until the result is available or timeout occurs.
             return result_queue.get(timeout=timeout)
         except queue.Empty:
+            # This is the primary expected exception: the emulation took too long.
             return {"error": f"Emulation timed out after {timeout} seconds."}
-        except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
         finally:
+            # Ensure the thread and r2pipe are cleaned up regardless of outcome.
             future.cancel()
             executor.shutdown(wait=False)
             r2.quit()

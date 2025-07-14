@@ -1,4 +1,3 @@
-
 import unittest
 import os
 import sys
@@ -22,6 +21,7 @@ from ai_agent.reverse_engineering import (
 from ai_agent.r2_utils import (
     get_call_graph,
     get_cfg_basic_blocks,
+    analyze_function_cfg,
     get_strings,
     search_string_refs,
     emulate_function
@@ -33,7 +33,6 @@ class TestReverseEngineeringTools(unittest.TestCase):
     def setUpClass(cls):
         """Set up the test class with the binary path."""
         cls.binary_path = os.path.join(project_root, '00_angr_find', '00_angr_find')
-        # cls.binary_path = os.path.join(project_root, 'crackme100')
         cls.function_name = 'main'
 
         # Check if the binary exists before running tests
@@ -51,7 +50,6 @@ class TestReverseEngineeringTools(unittest.TestCase):
 
         # Check if 'main' is in the list of function names
         main_found = any(re.match(f'^.*\\.{self.function_name}$', f['name']) or f['name'] == self.function_name for f in functions)
-        # main_found = any(f['name'] for f in functions)
         self.assertTrue(main_found, f"Function '{self.function_name}' not found in the binary.")
 
     def test_get_disassembly(self):
@@ -60,7 +58,7 @@ class TestReverseEngineeringTools(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertIn('result', result)
         self.assertIsInstance(result['result'], str)
-        self.assertIn('main', result['result']) # Check if the function name is in the disassembly
+        self.assertIn('main', result['result'])
 
     def test_get_pseudo_code(self):
         """Test get_pseudo_code for the main function."""
@@ -68,7 +66,6 @@ class TestReverseEngineeringTools(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertIn('result', result)
         self.assertIsInstance(result['result'], str)
-        # Check for C-like syntax
         self.assertIn('(', result['result'])
         self.assertIn(')', result['result'])
         self.assertIn('{', result['result'])
@@ -87,24 +84,47 @@ class TestReverseEngineeringTools(unittest.TestCase):
         result = get_cfg_basic_blocks(self.binary_path, self.function_name)
         self.assertIsInstance(result, list)
         self.assertGreater(len(result), 0, "CFG should have at least one basic block.")
+        
         block = result[0]
         self.assertIn('offset', block)
         self.assertIn('size', block)
         self.assertIn('succ', block)
+        self.assertIn('type', block)
+        self.assertIn('inputs', block)
+        self.assertIn('outputs', block)
+        self.assertIn('ninstr', block)
+        self.assertIsInstance(block['succ'], list)
+
+    def test_analyze_function_cfg(self):
+        """Test the new analyze_function_cfg function."""
+        result = analyze_function_cfg(self.binary_path, self.function_name)
+        self.assertIsInstance(result, dict)
+        
+        self.assertIn('blocks', result)
+        self.assertIn('stats', result)
+        self.assertIn('entry_points', result)
+        self.assertIn('exit_points', result)
+        
+        self.assertIsInstance(result['blocks'], list)
+        self.assertIsInstance(result['stats'], dict)
+        self.assertIsInstance(result['entry_points'], list)
+        self.assertIsInstance(result['exit_points'], list)
+        
+        self.assertGreater(len(result['blocks']), 0)
+        self.assertGreater(result['stats']['total_blocks'], 0)
+        self.assertGreater(result['stats']['cyclomatic_complexity'], 0)
 
     def test_get_strings(self):
         """Test get_strings to find known strings in the binary."""
         result = get_strings(self.binary_path)
         self.assertIsInstance(result, list)
         self.assertGreater(len(result), 0, "Should find at least one string.")
-
-        # Check for a known string from the 00_angr_find challenge
-        found_string = any("Good job." in s['string'] for s in result)
-        self.assertTrue(found_string, "Expected string 'Good job.' not found.")
+        found_string = any("Good Job." in s['string'] for s in result)
+        self.assertTrue(found_string, "Expected string 'Good Job.' not found.")
 
     def test_search_string_refs(self):
         """Test search_string_refs for a known string."""
-        query = "Good job."
+        query = "Good Job."
         result = search_string_refs(self.binary_path, query)
         self.assertIsInstance(result, list)
         self.assertGreater(len(result), 0, f"No references found for query: '{query}'")
