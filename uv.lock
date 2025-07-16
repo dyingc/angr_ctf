@@ -59,6 +59,7 @@ dependencies = [
     { name = "pwntools" },
     { name = "pydantic" },
     { name = "r2pipe" },
+    { name = "rzpipe" },
 ]
 
 [package.metadata]
@@ -71,6 +72,7 @@ requires-dist = [
     { name = "pwntools", specifier = ">=4.14.1" },
     { name = "pydantic", specifier = ">=2.11.7" },
     { name = "r2pipe", specifier = ">=1.9.6" },
+    { name = "rzpipe", specifier = ">=0.6.2" },
 ]
 
 [[package]]
@@ -2021,6 +2023,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/8b/e7/1c17410673b634f4658bb5d2232d0c4507432a97508b2c6708e59481644a/rpyc-6.0.2.tar.gz", hash = "sha256:8e780a6a71b842128a80a337c64adfb6f919014e069951832161c9efc630c93b", size = 62321, upload-time = "2025-04-18T16:33:21.693Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3f/99/2e119d541d596daea39643eb9312b47c7847383951300f889166938035b1/rpyc-6.0.2-py3-none-any.whl", hash = "sha256:8072308ad30725bc281c42c011fc8c922be15f3eeda6eafb2917cafe1b6f00ec", size = 74768, upload-time = "2025-04-18T16:33:20.147Z" },
+]
+
+[[package]]
+name = "rzpipe"
+version = "0.6.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/a0/ea6b61d5dcd700cf988cbd80d196cf0435ce902815bd8ec72b520f7348d2/rzpipe-0.6.2.tar.gz", hash = "sha256:28aa8f14c1a0b26898674b574c8861be12c37e6fe257c25c61e55ce1a91ecd87", size = 10756, upload-time = "2024-11-12T15:12:06.429Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a7/19/76347b9c0b19b80c68ccaabe939929ae037083b93896f7093eda7db5be7d/rzpipe-0.6.2-py3-none-any.whl", hash = "sha256:a620e2547e54f901233be6e1eb283fd7c499f6d9bd1651795c2ff53e5fab1d77", size = 12417, upload-time = "2024-11-12T15:12:05.543Z" },
 ]
 
 [[package]]

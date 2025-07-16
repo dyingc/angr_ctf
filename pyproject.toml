@@ -13,4 +13,5 @@ dependencies = [
     "pwntools>=4.14.1",
     "pydantic>=2.11.7",
     "r2pipe>=1.9.6",
+    "rzpipe>=0.6.2",
 ]

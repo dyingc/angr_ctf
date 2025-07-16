@@ -1,4 +1,3 @@
-
 """
 MCP Server for exposing reverse engineering tools.
 
@@ -43,7 +42,7 @@ async def get_function_list(binary_path: str, exclude_builtins: bool = True) -> 
     Args:
         binary_path: The absolute path to the binary file.
         exclude_builtins: If True, excludes built-in functions (e.g., 'sym.printf').
-    
+
     Returns:
         A dictionary containing the list of functions and other metadata.
     """
@@ -216,5 +215,9 @@ async def do_internal_inference(
 
 
 if __name__ == "__main__":
+    # Load configuration from YAML file
+    config_path = os.path.join(project_root, "ai_agent", "config.yaml")
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
     # Run the server using stdio transport
     mcp.run(transport='stdio')
