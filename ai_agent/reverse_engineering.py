@@ -43,29 +43,27 @@ def get_function_list(binary_path:str, exclude_builtins:bool=True)->Dict[str, An
     func_list = json.loads(functions)
     # Filter out built-in functions if needed
     if exclude_builtins:
-        func_list = [f for f in func_list if not f["name"].startswith("sym.")]
+        func_list = [f for f in func_list if not f["name"].startswith("sym.imp.") and not f["name"].startswith("func.")]
 
-    shortented_func_list = [{"offset": func["offset"],
-                  "name": func["name"],
-                  "size": func["realsz"],
-                  "file": func.get("file", ""),
-                  "signature": func["signature"]} for func in func_list]
+    shortented_func_list = []
+    for func in func_list:
+        shortented_func = {
+            "offset": func["offset"],
+            "name": func["name"],
+            "size": func["realsz"],
+            "file": func.get("file", ""),
+            "signature": func["signature"]
+        }
+        # Use the helper function from rz_utils to get detailed function info including callers
+        detailed_func = rzu._get_function_via_addr(rz, func["offset"])
+        if detailed_func:
+            shortented_func["called_by"] = detailed_func.get("called_by", [])
+        else:
+            shortented_func["called_by"] = []
+        shortented_func_list.append(shortented_func)
 
-    # Get the list of functions that call this function
-    for func in shortented_func_list:
-        calls = []
-        xrefs = rz.cmdj(f"axtj @ {func['offset']}")
-        for x in xrefs or []:
-            from_addr = x.get("from")
-            if from_addr is None:
-                continue
-            finfo = rz.cmdj(f"afij @ {from_addr}") or []
-            fname = finfo[0].get("name", "unknown") if finfo else "unknown"
-            calls.append(fname)
-        func["called_by"] = ", ".join(sorted(set(calls)))
     # Close the rzpipe session
     rz.quit()
-    # shortented_func_list = '\n'.join([f"{func['offset']}\t{func['name']}\t{func['size']}\t{func['file']}\t{func['signature']}\t{func['called_by']}" for func in shortented_func_list])
     result = {"result": shortented_func_list,
               "need_refine": False,
               "prompts": []}

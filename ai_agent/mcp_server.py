@@ -6,6 +6,7 @@ to interact with the reverse engineering functions defined in the project.
 """
 import sys
 import os
+import yaml
 
 # Add the project root to the Python path to resolve module imports
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))

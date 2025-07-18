@@ -31,6 +31,44 @@ def _open_rzpipe(binary_path: str) -> rzpipe.open:
     rz.cmd("e scr.color=0; aaa")  # Disable color, perform auto-analysis
     return rz
 
+def _get_function_via_addr(rz: rzpipe.open, addr: int) -> Dict[str, Any]:
+    """
+    Retrieves function information for a given address.
+
+    Args:
+        rz: An active rzpipe instance.
+        addr: The address of the function.
+
+    Returns:
+        A dictionary containing function information, or an empty dict if not found.
+    """
+    func = json.loads(rz.cmd(f"afij @ {addr}"))
+    func = func[0] if isinstance(func, list) and len(func) > 0 else {}
+    if not func:
+        return {}
+    shortented_func = {
+        "offset": func.get("offset"),
+        "name": func.get("name"),
+        "size": func.get("realsz"),
+        "file": func.get("file", ""),
+        "signature": func.get("signature")
+    }
+    # Get the list of functions that call this function
+    xrefs = rz.cmdj(f"axtj @ {addr}")
+    shortented_func["called_by"] = []
+    for x in xrefs or []:
+        from_addr = x.get("from")
+        if from_addr is None:
+            continue
+        # Get the function info for the caller
+        finfo = rz.cmdj(f"afij @ {from_addr}")
+        if not finfo or not isinstance(finfo, list) or len(finfo) == 0:
+            continue
+        fname = finfo[0].get("name", "unknown")
+        shortented_func["called_by"].append({'name': fname, 'offset': from_addr})
+
+    return shortented_func
+
 def get_call_graph(binary_path: str, function_name: Optional[str] = None, depth: int = 3) -> Dict[str, Any]:
     """
     Generates a call graph for a binary.
@@ -81,7 +119,7 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None, depth:
                     # This part might need refinement based on exact agfj output structure for edges
                     # For simplicity, we'll just list nodes for now, or use a different rz command if needed for edges
                     # A more robust approach for global graph might involve parsing 'agf' and then 'axf' for calls
-            
+
             return {"nodes": nodes, "edges": edges}
         finally:
             rz.quit()
@@ -198,19 +236,28 @@ def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, m
                 # axtj: xrefs to address, JSON output
                 refs_json = rz.cmd(f"axtj @ {str_addr}")
                 refs_data = json.loads(refs_json) if refs_json else []
-
-                formatted_refs = [
-                    {
-                        "fcn": ref.get("fcn_name"),
-                        "offset": ref.get("from"),
-                        "disasm": ref.get("opcode") # This might be the instruction that references it
-                    } for ref in refs_data[:max_refs]
-                ]
+                refs = []
+                for ref in refs_data:
+                    if not ref:
+                        continue
+                    f = _get_function_via_addr(rz, ref.get("from"))
+                    code = ref.get("from")
+                    code = json.loads(rz.cmd(f"pdj 1 @ {code}"))  # Get disassembly for the target address
+                    if not code:
+                        continue
+                    disasm = code[0].get("disasm", "")
+                    opcode = code[0].get("opcode", "")
+                    refs.append({
+                        "caller": f.get("name") if f else "unknown",
+                        "calling_addr": hex(ref.get("from")) if ref.get("from") else "unknown",
+                        "disasm": disasm or "unknown",
+                        "opcode": opcode or "unknown",\
+                    })
 
                 results.append({
                     "string": s.get("string"),
                     "str_addr": hex(str_addr),
-                    "refs": formatted_refs
+                    "refs": refs[:max_refs]  # Limit to max_refs
                 })
             return results
         finally:
@@ -299,3 +346,22 @@ def emulate_function(binary_path: str, function_name: str, max_steps: int = 100,
             future.cancel()
             executor.shutdown(wait=False)
             rz.quit()
+
+
+if __name__ == "__main__":
+    binary_path = "./crackme100"  # Example binary path
+    function_name = "main"  # Example function name
+
+    # Test search_string_refs
+    query = "Enter the secret password:"
+    results = search_string_refs(binary_path, query)
+    print(f"Search results for '{query}':")
+
+    for res in results:
+        print(f"  String: {res['string']}, Address: {res['str_addr']}")
+        for ref in res['refs']:
+            print(f"    Ref: {ref['fcn']} at {hex(ref['offset'])} - {ref['disasm']}")
+
+    # Emulate the function and print the result
+    result = emulate_function(binary_path, function_name)
+    print(json.dumps(result, indent=2))
