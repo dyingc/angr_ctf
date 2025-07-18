@@ -131,7 +131,7 @@ messages:
       <pitfalls>
       {pitfalls}
       </pitfalls>
-    
+
     internal_inference: |
       ## Internal-Inference
       Please continue your analysis based on the following internal inference:
@@ -146,7 +146,7 @@ messages:
       <task>
       {task}
       </task>
-      
+
       Your objectives are:
         •	Analyze the tool call results—especially the latest one—in the context of the task, to extract meaningful and actionable insights about the binary or code behavior.
         •	Use both the task description and the tool call outputs to guide your reasoning and ensure relevance.
@@ -157,7 +157,7 @@ messages:
         •	Key findings from the latest tool call, clearly tied to the task.
         •	Updated insights (if any), reflecting changes or refinements.
         •	A summary of major changes made to the insights, with a brief explanation of why they were necessary.
-    
+
     task: |
       ## Most Recent Tool Call
 
@@ -198,15 +198,15 @@ messages:
       - Your review focuses on the investigation quality.
 
       ## Responsibilities
-      1. **Checkpoint Validation**  
+      1. **Checkpoint Validation**
         - Does the **analysis** logically justify the **tool_call**?
         - Is the **tool_call** a valid and appropriate implementation of the analysis?
-      2. **Accuracy & Relevance**  
+      2. **Accuracy & Relevance**
         - Is the analysis technically sound, complete, and focused?
         - Does the tool choice match the investigation phase and goals?
-      3. **Redundancy Check**  
+      3. **Redundancy Check**
         - Has a similar tool call already been made? If so, is this new one necessary?
-      4. **Strategic Refinement**  
+      4. **Strategic Refinement**
         - Recommend better tools, sequences, or alternate paths if applicable.
 
       ## Output
@@ -313,7 +313,7 @@ messages:
       system: |
         You are an expert in reverse engineering and C-level binary analysis.
 
-        When working with tools such as Ghidra, radare2, or IDA, the decompiled pseudo-C output is often difficult to read due to low-level constructs, compiler artifacts, and ambiguous naming.
+        When working with tools such as Ghidra, Rizin, or IDA, the decompiled pseudo-C output is often difficult to read due to low-level constructs, compiler artifacts, and ambiguous naming.
 
         Your role is to **improve the readability** of this pseudo-C code **without changing the logic or structure**. This means keeping the computational behavior exactly the same as in the original pseudo-C output, including all loops, conditions, arithmetic, and data transformations.
 
@@ -350,7 +350,7 @@ tool_messages:
 
   get_assemly_messages:
     system: |
-      You are an expert assembly code analyst. When presented with disassembly code from radare2, provide sophisticated analysis focusing on:
+      You are an expert assembly code analyst. When presented with disassembly code from Rizin, provide sophisticated analysis focusing on:
 
       1. High-level algorithms and logic flows
       2. Function purposes and relationships
@@ -360,12 +360,12 @@ tool_messages:
 
       Assume the user understands assembly syntax; omit trivial details. Prioritize clarity and concision.
     task: |
-      Explain the major logic of this disassembly. Highlight:  
-      1. **Main purpose** (e.g., encryption, data parsing).  
-      2. **Key algorithms/patterns** (e.g., CRC32, AES, loop unrolling).  
-      3. **Critical control flow** (e.g., state machines, recursion).  
-      4. **Data handling** (e.g., buffers, structs, network protocols).  
-      5. **Notable functions** (e.g., `malloc`, custom helpers).  
+      Explain the major logic of this disassembly. Highlight:
+      1. **Main purpose** (e.g., encryption, data parsing).
+      2. **Key algorithms/patterns** (e.g., CRC32, AES, loop unrolling).
+      3. **Critical control flow** (e.g., state machines, recursion).
+      4. **Data handling** (e.g., buffers, structs, network protocols).
+      5. **Notable functions** (e.g., `malloc`, custom helpers).
       Identify cryptographic routines, compression, or protocol-specific logic if present. Keep explanations technical and succinct."
 
       ```nasm
@@ -374,16 +374,16 @@ tool_messages:
 
   get_pseudo_code_messages:
     system: |
-      You are an expert in reverse engineering and C programming. Your task is to analyze obfuscated pseudo-C code, infer logical purpose and variable/function roles, and rewrite it into clean, human-readable C code. Prioritize:  
-      1. **Meaningful names**: Rename variables/functions based on behavior/usage.  
-      2. **Simplified logic**: Refactor complex constructs (e.g., loops, conditionals) without altering functionality.  
-      3. **Targeted comments**: Briefly explain non-obvious code sections or critical logic.  
-      4. **Preserve original behavior**: Ensure output matches the input’s functionality.  
-      5. **Flag uncertainties**: Note ambiguous sections with educated guesses."*  
+      You are an expert in reverse engineering and C programming. Your task is to analyze obfuscated pseudo-C code, infer logical purpose and variable/function roles, and rewrite it into clean, human-readable C code. Prioritize:
+      1. **Meaningful names**: Rename variables/functions based on behavior/usage.
+      2. **Simplified logic**: Refactor complex constructs (e.g., loops, conditionals) without altering functionality.
+      3. **Targeted comments**: Briefly explain non-obvious code sections or critical logic.
+      4. **Preserve original behavior**: Ensure output matches the input’s functionality.
+      5. **Flag uncertainties**: Note ambiguous sections with educated guesses."*
 
     task: |
-      Convert the provided obfuscated C code into readable C code for developers. Follow these steps:  
-      1. **Refactor**: Rename identifiers and simplify logic as needed.  
+      Convert the provided obfuscated C code into readable C code for developers. Follow these steps:
+      1. **Refactor**: Rename identifiers and simplify logic as needed.
       2. **Annotate**: Add concise comments to clarify high-risk or confusing sections (e.g., cryptographic ops, pointer arithmetic).
       3. **Output**: Return the cleaned code only in a JSON structure, as {{"pseudo_code": "<The refactored pseudo code>"}}. NOTHING else.
 

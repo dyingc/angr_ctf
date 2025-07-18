@@ -17,7 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from typing import List, Optional, Any, Dict
 
 # Import the functions and their input models from the existing modules
-from ai_agent import r2_utils
+from ai_agent import rz_utils
 from ai_agent.reverse_engineering import (
     get_function_list as get_function_list_impl,
     get_disassembly as get_disassembly_impl,
@@ -31,13 +31,13 @@ from ai_agent.reverse_engineering import (
 # Initialize the FastMCP server
 mcp = FastMCP(
     "reverse_engineering_tools",
-    "A collection of tools for binary reverse engineering using radare2 and other utilities."
+    "A collection of tools for binary reverse engineering using Rizin and other utilities."
 )
 
 @mcp.tool()
 async def get_function_list(binary_path: str, exclude_builtins: bool = True) -> Dict[str, Any]:
     """
-    Get the list of functions in a binary using radare2.
+    Get the list of functions in a binary using Rizin.
 
     Args:
         binary_path: The absolute path to the binary file.
@@ -51,7 +51,7 @@ async def get_function_list(binary_path: str, exclude_builtins: bool = True) -> 
 @mcp.tool()
 async def get_disassembly(binary_path: str, function_name: str) -> Dict[str, Any]:
     """
-    Get disassembly of a specific function from a binary using radare2.
+    Get disassembly of a specific function from a binary using Rizin.
 
     Args:
         binary_path: The absolute path to the binary file.
@@ -65,7 +65,7 @@ async def get_disassembly(binary_path: str, function_name: str) -> Dict[str, Any
 @mcp.tool()
 async def get_pseudo_code(binary_path: str, function_name: str) -> Dict[str, Any]:
     """
-    Get pseudo C code of a function using radare2's Ghidra decompiler plugin.
+    Get pseudo C code of a function using Rizin's Ghidra decompiler plugin.
 
     Args:
         binary_path: The absolute path to the binary file.
@@ -89,7 +89,7 @@ async def get_call_graph(binary_path: str, function_name: Optional[str] = None, 
     Returns:
         A dictionary containing the nodes and edges of the call graph.
     """
-    return r2_utils.get_call_graph(binary_path, function_name, depth)
+    return rz_utils.get_call_graph(binary_path, function_name, depth)
 
 @mcp.tool()
 async def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[str, Any]]:
@@ -103,7 +103,7 @@ async def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dic
     Returns:
         A list of dictionaries, each representing a basic block.
     """
-    return r2_utils.get_cfg_basic_blocks(binary_path, function_name)
+    return rz_utils.get_cfg_basic_blocks(binary_path, function_name)
 
 @mcp.tool()
 async def get_strings(binary_path: str, min_length: int = 4) -> List[Dict[str, Any]]:
@@ -117,7 +117,7 @@ async def get_strings(binary_path: str, min_length: int = 4) -> List[Dict[str, A
     Returns:
         A list of dictionaries, each representing a found string.
     """
-    return r2_utils.get_strings(binary_path, min_length)
+    return rz_utils.get_strings(binary_path, min_length)
 
 @mcp.tool()
 async def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, max_refs: int = 50) -> List[Dict[str, Any]]:
@@ -133,12 +133,12 @@ async def search_string_refs(binary_path: str, query: str, ignore_case: bool = T
     Returns:
         A list of dictionaries for each matched string and its references.
     """
-    return r2_utils.search_string_refs(binary_path, query, ignore_case, max_refs)
+    return rz_utils.search_string_refs(binary_path, query, ignore_case, max_refs)
 
 @mcp.tool()
 async def emulate_function(binary_path: str, function_name: str, max_steps: int = 100, timeout: int = 60) -> Dict[str, Any]:
     """
-    Performs a step-by-step emulation of a function using radare2's ESIL.
+    Performs a step-by-step emulation of a function using Rizin's ESIL.
 
     Args:
         binary_path: The absolute path to the binary file.
@@ -149,7 +149,7 @@ async def emulate_function(binary_path: str, function_name: str, max_steps: int 
     Returns:
         A dictionary containing the emulation trace and final register states, or an error.
     """
-    return r2_utils.emulate_function(binary_path, function_name, max_steps, timeout)
+    return rz_utils.emulate_function(binary_path, function_name, max_steps, timeout)
 
 @mcp.tool()
 async def execute_python_code(code: str, timeout: int = 60) -> Dict[str, Any]:

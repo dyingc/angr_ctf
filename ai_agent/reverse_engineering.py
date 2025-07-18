@@ -1,22 +1,23 @@
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional, Literal
-import r2pipe
+import rzpipe
 import json
-import sys
+import sys, os
 import subprocess
 import yaml
 import traceback
 from io import StringIO
 import contextlib
 import concurrent.futures
-from ai_agent import r2_utils as r2u # Import the new r2_utils module
+from ai_agent import rz_utils as rzu # Import the new r2_utils module
 
 # Load configuration from YAML file
-with open("config.yaml") as f:
+config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
+with open(config_path) as f:
     config = yaml.safe_load(f)
 
-# Get the list of functions in a binary, using radare2
+# Get the list of functions in a binary, using Rizin
 # Excluding those built-in functions
 
 class FunctionListToolInput(BaseModel):
@@ -24,14 +25,14 @@ class FunctionListToolInput(BaseModel):
     exclude_builtins: bool = Field(True, description="Whether to exclude the system or C-library built-in functions, usually starts with \"sym.\".")
 
 def get_function_list(binary_path:str, exclude_builtins:bool=True)->Dict[str, Any]:
-    # Open the binary in radare2
-    r2 = r2pipe.open(binary_path)
+    # Open the binary in Rizin
+    rz = rzpipe.open(binary_path)
 
     # Perform analysis (equivalent to "aaa" command)
-    r2.cmd("aaa")
+    rz.cmd("aaa")
 
     # Get function list (equivalent to "afl" command)
-    functions = r2.cmd("aflj")  # JSON output
+    functions = rz.cmd("aflj")  # JSON output
 
     # Parse JSON output
     if not functions or not isinstance(functions, str):
@@ -50,16 +51,20 @@ def get_function_list(binary_path:str, exclude_builtins:bool=True)->Dict[str, An
                   "file": func.get("file", ""),
                   "signature": func["signature"]} for func in func_list]
 
-    # Get the list of calling functions of each function
+    # Get the list of functions that call this function
     for func in shortented_func_list:
-        calls = r2.cmd(f"axtj @ {func['offset']}")
-        if calls:
-            calls = json.loads(calls)
-            func["called_by"] = ', '.join([c['fcn_name'] for c in calls])
-        else:
-            func["called_by"] = ''
-    # Close the r2pipe session
-    r2.quit()
+        calls = []
+        xrefs = rz.cmdj(f"axtj @ {func['offset']}")
+        for x in xrefs or []:
+            from_addr = x.get("from")
+            if from_addr is None:
+                continue
+            finfo = rz.cmdj(f"afij @ {from_addr}") or []
+            fname = finfo[0].get("name", "unknown") if finfo else "unknown"
+            calls.append(fname)
+        func["called_by"] = ", ".join(sorted(set(calls)))
+    # Close the rzpipe session
+    rz.quit()
     # shortented_func_list = '\n'.join([f"{func['offset']}\t{func['name']}\t{func['size']}\t{func['file']}\t{func['signature']}\t{func['called_by']}" for func in shortented_func_list])
     result = {"result": shortented_func_list,
               "need_refine": False,
@@ -70,33 +75,33 @@ def get_function_list(binary_path:str, exclude_builtins:bool=True)->Dict[str, An
 function_list_tool = StructuredTool.from_function(
     get_function_list,
     name="get_function_list",
-    description="Get the list of functions in a binary, using radare2. Exclude built-in functions by default. Dependencies: radare2 installed and available in PATH.",
+    description="Get the list of functions in a binary, using Rizin. Exclude built-in functions by default. Dependencies: Rizin installed and available in PATH.",
     args_schema=FunctionListToolInput,
 )
 
 # get_function_list(binary_path=file_name, exclude_builtins=True)
 
-# Get disassembly of a specific function from a binary, using radare2
+# Get disassembly of a specific function from a binary, using Rizin
 
 class DisassemblyToolInput(BaseModel):
     binary_path: str = Field(..., description="The path to the binary file.")
     function_name: str = Field(..., description="The name of the function to disassemble.")
 
 def get_disassembly(binary_path:str, function_name:str)->Dict[str, Any]:
-    # Open the binary in radare2
-    r2 = r2pipe.open(binary_path)
+    # Open the binary in Rizin
+    rz = rzpipe.open(binary_path)
 
     # Perform analysis (equivalent to "aaa" command)
-    r2.cmd("e scr.color=0; aaa")
+    rz.cmd("e scr.color=0; aaa")
 
     # Get disassembly of the function (equivalent to "pdf @ function_name" command)
-    disassembly = r2.cmd(f"pdfj @ {function_name}")
+    disassembly = rz.cmd(f"pdfj @ {function_name}")
     if not disassembly or not isinstance(disassembly, str):
         return {"result": "", "need_refine": False, "prompts": []}
     disassembly = json.loads(disassembly)
 
-    # Close the r2pipe session
-    r2.quit()
+    # Close the rzpipe session
+    rz.quit()
 
     disa_str = '\n'.join([f"{d['offset']}\t{d['disasm']}" for d in disassembly.get('ops')])
 
@@ -112,27 +117,27 @@ def get_disassembly(binary_path:str, function_name:str)->Dict[str, Any]:
 disassembly_tool = StructuredTool.from_function(
     get_disassembly,
     name="get_disassembly",
-    description="Get disassembly of a specific function from a binary, using radare2. Dependencies: radare2 installed and available in PATH.",
+    description="Get disassembly of a specific function from a binary, using Rizin. Dependencies: Rizin installed and available in PATH.",
     args_schema=DisassemblyToolInput,
 )
 
 # get_disassembly(file_name, "dbg.main")
 
 
-# Get the pseudo code of a specific function from a binary, using radare2's Ghidra plugin
+# Get the pseudo code of a specific function from a binary, using Rizin's Ghidra plugin
 class PseudoCodeToolInput(BaseModel):
     binary_path: str = Field(..., description="The path to the binary file.")
     function_name: str = Field(..., description="The name of the function to get pseudo C code.")
 
 def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]: # Changed return type to Dict[str, Any]
-    # Open the binary in radare2
-    r2 = r2pipe.open(binary_path)
+    # Open the binary in Rizin
+    rz = rzpipe.open(binary_path)
 
     # Perform analysis (equivalent to "aaa" command)
-    r2.cmd("e scr.color=0; aaa")
+    rz.cmd("e scr.color=0; aaa")
 
     # Get pseudo code of the function (equivalent to "pdg @ function_name" command)
-    pseudo_code = r2.cmd(f"pdgj @ {function_name}")
+    pseudo_code = rz.cmd(f"pdgj @ {function_name}")
     if not pseudo_code or not isinstance(pseudo_code, str):
         return {
             "result": "",
@@ -144,8 +149,8 @@ def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]: # Chan
         }
     pseudo_code = json.loads(pseudo_code)
 
-    # Close the r2pipe session
-    r2.quit()
+    # Close the rzpipe session
+    rz.quit()
 
     pcode_str = pseudo_code.get('code')
 
@@ -161,8 +166,7 @@ def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]: # Chan
 pseudo_code_tool = StructuredTool.from_function(
     get_pseudo_code,
     name="get_pseudo_code",
-    description="Get pseudo C code of a specific function from a binary, \
-using radare2's Ghidra plugin. Dependancies: radare2 with Ghidra plugin installed.",
+    description="Get pseudo C code of a specific function from a binary, \nusing Rizin's Ghidra plugin. Dependancies: Rizin with Ghidra plugin installed.",
     args_schema=PseudoCodeToolInput,
 )
 
@@ -297,13 +301,13 @@ class CallGraphToolInput(BaseModel):
     depth: int = Field(3, description="The depth of the call graph to generate for a specific function.")
 
 def _get_call_graph_tool_impl(tool_input: CallGraphToolInput) -> Dict[str, Any]:
-    result = r2u.get_call_graph(tool_input.binary_path, tool_input.function_name, tool_input.depth)
+    result = rzu.get_call_graph(tool_input.binary_path, tool_input.function_name, tool_input.depth)
     return {"result": result, "need_refine": False, "prompts": []}
 
 call_graph_tool = StructuredTool.from_function(
     _get_call_graph_tool_impl,
     name="get_call_graph",
-    description="Generates a call graph for a binary using radare2. Can be global or for a specific function with depth.",
+    description="Generates a call graph for a binary using Rizin. Can be global or for a specific function with depth.",
     args_schema=CallGraphToolInput,
 )
 
@@ -313,7 +317,7 @@ class CFGBasicBlocksToolInput(BaseModel):
     function_name: str = Field(..., description="The name of the function to get basic blocks for.")
 
 def _get_cfg_basic_blocks_tool_impl(tool_input: CFGBasicBlocksToolInput) -> Dict[str, Any]:
-    result = r2u.get_cfg_basic_blocks(tool_input.binary_path, tool_input.function_name)
+    result = rzu.get_cfg_basic_blocks(tool_input.binary_path, tool_input.function_name)
     return {"result": result, "need_refine": False, "prompts": []}
 
 cfg_basic_blocks_tool = StructuredTool.from_function(
@@ -329,13 +333,13 @@ class GetStringsToolInput(BaseModel):
     min_length: int = Field(4, description="Minimum length of strings to extract.")
 
 def _get_strings_tool_impl(tool_input: GetStringsToolInput) -> Dict[str, Any]:
-    result = r2u.get_strings(tool_input.binary_path, tool_input.min_length)
+    result = rzu.get_strings(tool_input.binary_path, tool_input.min_length)
     return {"result": result, "need_refine": False, "prompts": []}
 
 get_strings_tool = StructuredTool.from_function(
     _get_strings_tool_impl,
     name="get_strings",
-    description="Extracts printable strings from a binary using radare2.",
+    description="Extracts printable strings from a binary using Rizin.",
     args_schema=GetStringsToolInput,
 )
 
@@ -347,13 +351,13 @@ class SearchStringRefsToolInput(BaseModel):
     max_refs: int = Field(50, description="Maximum number of references to return per string.")
 
 def _search_string_refs_tool_impl(tool_input: SearchStringRefsToolInput) -> Dict[str, Any]:
-    result = r2u.search_string_refs(tool_input.binary_path, tool_input.query, tool_input.ignore_case, tool_input.max_refs)
+    result = rzu.search_string_refs(tool_input.binary_path, tool_input.query, tool_input.ignore_case, tool_input.max_refs)
     return {"result": result, "need_refine": False, "prompts": []}
 
 search_string_refs_tool = StructuredTool.from_function(
     _search_string_refs_tool_impl,
     name="search_string_refs",
-    description="Searches for string references in a binary based on a query (substring or regex) using radare2.",
+    description="Searches for string references in a binary based on a query (substring or regex) using Rizin.",
     args_schema=SearchStringRefsToolInput,
 )
 
@@ -365,13 +369,13 @@ class EmulateFunctionToolInput(BaseModel):
     timeout: int = Field(60, description="Maximum execution time in seconds before timeout.")
 
 def _emulate_function_tool_impl(tool_input: EmulateFunctionToolInput) -> Dict[str, Any]:
-    result = r2u.emulate_function(tool_input.binary_path, tool_input.function_name, tool_input.max_steps, tool_input.timeout)
+    result = rzu.emulate_function(tool_input.binary_path, tool_input.function_name, tool_input.max_steps, tool_input.timeout)
     return {"result": result, "need_refine": False, "prompts": []}
 
 emulate_function_tool = StructuredTool.from_function(
     _emulate_function_tool_impl,
     name="emulate_function",
-    description="Emulates a function for a specified number of steps and returns register states and trace using radare2's ESIL.",
+    description="Emulates a function for a specified number of steps and returns register states and trace using Rizin's ESIL.",
     args_schema=EmulateFunctionToolInput,
 )
 
