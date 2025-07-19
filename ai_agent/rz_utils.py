@@ -69,7 +69,7 @@ def _get_function_via_addr(rz: rzpipe.open, addr: int) -> Dict[str, Any]:
 
     return shortented_func
 
-def get_call_graph(binary_path: str, function_name: Optional[str] = None, depth: int = 3) -> Dict[str, Any]:
+def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Generates a call graph for a binary.
 
@@ -80,7 +80,6 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None, depth:
     Args:
         binary_path: The path to the binary file.
         function_name: Optional. The name of the function to start the graph from.
-        depth: The maximum depth of the call graph when a function_name is given.
 
     Returns:
         A dictionary containing 'nodes' and 'edges' of the call graph.
@@ -92,11 +91,11 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None, depth:
             if function_name:
                 # Get call graph for a specific function with depth
                 # agCdj: call graph with depth, JSON output
-                graph_json = rz.cmd(f"agCdj {depth} @ {function_name}")
+                graph_json = rz.cmd(f"agc json @ {function_name}")
             else:
                 # Get global call graph
                 # agfj: function call graph, JSON output
-                graph_json = rz.cmd("agfj")
+                graph_json = rz.cmd("agC json")
 
             if not graph_json:
                 return {"nodes": [], "edges": []}
@@ -105,22 +104,30 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None, depth:
             nodes = []
             edges = []
 
-            # For agfj, it's a list of nodes with 'name', 'addr', 'imports', 'exports'
-            # For agCdj, it's a single object with 'nodes' and 'edges'
-            if function_name:
-                if graph_data and isinstance(graph_data, dict):
-                    nodes = [{"name": n["name"], "addr": n["addr"]} for n in graph_data.get("nodes", [])]
-                    edges = [(e["from"], e["to"]) for e in graph_data.get("edges", [])]
-            else:
-                # Process global call graph (agfj)
-                for node in graph_data:
-                    nodes.append({"name": node["name"], "addr": node["addr"]})
-                    # agfj doesn't directly give edges in a simple list, need to infer from imports/exports
-                    # This part might need refinement based on exact agfj output structure for edges
-                    # For simplicity, we'll just list nodes for now, or use a different rz command if needed for edges
-                    # A more robust approach for global graph might involve parsing 'agf' and then 'axf' for calls
+            # Map internal graph node-id → offset for easy edge translation
+            id2off = {}
+            nodes = []
+            for n in graph_data.get("nodes", []):
+                node_entry = {
+                    "id": n.get("id"),
+                    "name": n.get("title"),
+                    "addr": n.get("offset"),
+                }
+                nodes.append(node_entry)
+                id2off[node_entry["id"]] = node_entry["addr"]
+
+            edges = []
+            from_node = graph_data.get("nodes", [])[0]
+            out_node_ids = from_node.get("out_nodes", [])
+            for dst_id in out_node_ids:
+                src_id = from_node.get("id")
+                if src_id in id2off and dst_id in id2off:
+                    edges.append({"from": src_id, "to": dst_id})
 
             return {"nodes": nodes, "edges": edges}
+        except Exception as e:
+            print(f"Error generating call graph: {e}")
+            return {"nodes": [], "edges": []}
         finally:
             rz.quit()
 
@@ -145,32 +152,21 @@ def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[str,
             if not blocks_json:
                 return []
             blocks_data = json.loads(blocks_json)
-
-            # Get control flow graph edges (agj: graph, JSON output)
-            edges_json = rz.cmd(f"agj @ {function_name}")
-            edges_data = json.loads(edges_json) if edges_json else []
-
-            # Map block addresses to their data for easier lookup
-            block_map = {b["offset"]: b for b in blocks_data}
-
-            # Add successors to each block
-            for edge in edges_data:
-                src_addr = edge["from"]
-                dst_addr = edge["to"]
-                if src_addr in block_map:
-                    if "succ" not in block_map[src_addr]:
-                        block_map[src_addr]["succ"] = []
-                    block_map[src_addr]["succ"].append(dst_addr)
-
-            # Format output
-            formatted_blocks = [
-                {
-                    "offset": block["offset"],
-                    "size": block["size"],
-                    "type": block.get("type", "unknown"), # e.g., "entry", "cond", "uncond"
-                    "succ": block.get("succ", [])
-                } for block in blocks_data
-            ]
+            formatted_blocks = []
+            for block in blocks_data:
+                b = {
+                    "addr": block.get("addr"),
+                    "size": block.get("size"),
+                    "num_of_input_blocks": block.get("inputs", 0),
+                    "num_of_output_blocks": block.get("outputs", 0),
+                    "num_of_instructions": block.get("ninstr", 0),
+                    "jump_to_addr": block.get("jump"),
+                    "jump_to_func_with_offset": rz.cmd(f"afd @ {block.get('jump')}").strip() if block.get("jump") else None
+                }
+                if "fail" in block:
+                    b["fall_through_addr"] = block["fail"]
+                    b["fall_through_func_with_offset"] = rz.cmd(f"afd @ {block.get('fail')}").strip() if block.get("fail") else None
+                formatted_blocks.append({b['addr']: b})
             return formatted_blocks
         finally:
             rz.quit()
@@ -249,69 +245,195 @@ def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, m
                     opcode = code[0].get("opcode", "")
                     refs.append({
                         "caller": f.get("name") if f else "unknown",
-                        "calling_addr": hex(ref.get("from")) if ref.get("from") else "unknown",
+                        "calling_addr": ref.get("from") if ref.get("from") else "unknown",
                         "disasm": disasm or "unknown",
-                        "opcode": opcode or "unknown",\
+                        "opcode": opcode or "unknown",
                     })
 
                 results.append({
                     "string": s.get("string"),
-                    "str_addr": hex(str_addr),
+                    "str_addr": str_addr,
                     "refs": refs[:max_refs]  # Limit to max_refs
                 })
             return results
         finally:
             rz.quit()
 
-def _emulate_function_target(rz_instance, function_name, max_steps, result_queue):
-    """
-    Target function for threaded ESIL emulation to allow for timeouts.
+import json
+import time
 
-    This function is intended to be run in a separate thread. It initializes
-    ESIL, steps through the function's instructions, and records the trace.
+def _emulate_function_target_rzil(rz_instance, function_name, max_steps, result_queue, timeout_seconds=30):
+    """
+    现代化的RzIL模拟函数，充分利用Rizin的新架构
 
     Args:
-        rz_instance: An active rzpipe instance.
-        function_name: The name of the function to emulate.
-        max_steps: The maximum number of instructions to emulate.
-        result_queue: A queue to store the final result or error.
+        rz_instance: rzpipe实例
+        function_name: 要模拟的函数名
+        max_steps: 最大执行步数
+        result_queue: 结果队列
+        timeout_seconds: 超时时间（秒）
     """
+    start_time = time.time()
+
     try:
-        rz_instance.cmd(f"aeim @ {function_name}") # Initialize ESIL emulation at function entry
-        trace = []
-        for step in range(max_steps):
-            # Get current register state (aerj: ESIL registers, JSON output)
-            regs_json = rz_instance.cmd("aerj")
-            current_regs = json.loads(regs_json) if regs_json else {}
+        # 1. 初始化RzIL VM
+        rz_instance.cmd(f"s {function_name}")  # 跳转到函数
+        init_result = rz_instance.cmd("aezi")   # 初始化RzIL VM
 
-            # Get current instruction (pdj 1 @ PC)
-            current_pc = current_regs.get("pc")
-            if current_pc is None:
-                break # PC not found, something went wrong
-
-            disasm_json = rz_instance.cmd(f"pdj 1 @ {current_pc}")
-            current_op = json.loads(disasm_json)[0] if disasm_json else {}
-
-            trace.append({
-                "step": step,
-                "pc": hex(current_pc),
-                "op": current_op.get("disasm"),
-                "regs": current_regs
+        if "error" in init_result.lower():
+            result_queue.put({
+                "error": f"Failed to initialize RzIL VM: {init_result}",
+                "success": False
             })
+            return
 
-            # Execute one ESIL instruction (aei: ESIL step)
-            rz_instance.cmd("aei")
+        trace = []
+        vm_changes = []  # 记录VM状态变化
 
-            # Check if emulation finished (e.g., hit ret or invalid instruction)
-            # This is a heuristic, a more robust check might involve analyzing ESIL flags or state
-            if rz_instance.cmd("aerj").strip() == "{}": # If registers are empty, emulation might have stopped
+        # 2. 开始执行
+        for step in range(max_steps):
+            # 超时检查
+            if time.time() - start_time > timeout_seconds:
                 break
 
-        final_regs_json = rz_instance.cmd("aerj")
-        final_regs = json.loads(final_regs_json) if final_regs_json else {}
-        result_queue.put({"final_regs": final_regs, "trace": trace})
+            # 3. 获取当前寄存器状态
+            regs_json = rz_instance.cmd("arj")
+            current_regs = json.loads(regs_json) if regs_json.strip() else {}
+
+            # 4. 获取当前PC
+            current_pc = current_regs.get("rip", current_regs.get("pc", current_regs.get("eip")))
+            if current_pc is None:
+                break
+
+            # 5. 获取当前指令信息
+            disasm_json = rz_instance.cmd(f"pdj 1 @ {current_pc}")
+            if not disasm_json.strip():
+                break
+
+            try:
+                current_op = json.loads(disasm_json)[0]
+            except (json.JSONDecodeError, IndexError):
+                current_op = {}
+
+            # 6. 获取RzIL表示
+            rzil_repr = ""
+            try:
+                rzil_repr = rz_instance.cmd(f"aoip 1 @ {current_pc}")
+            except:
+                rzil_repr = "N/A"
+
+            # 7. 记录当前状态
+            step_info = {
+                "step": step,
+                "pc": hex(current_pc) if isinstance(current_pc, int) else current_pc,
+                "op": current_op.get("disasm", ""),
+                "opcode": current_op.get("opcode", ""),
+                "type": current_op.get("type", ""),
+                "rzil": rzil_repr.strip(),
+                "regs": current_regs,
+                "timestamp": time.time() - start_time
+            }
+
+            trace.append(step_info)
+
+            # 8. 执行一步RzIL并记录状态变化
+            step_output = rz_instance.cmd("aezse 1")  # 执行并显示状态变化
+
+            # 解析VM状态变化
+            if step_output.strip():
+                vm_changes.append({
+                    "step": step,
+                    "changes": step_output.strip(),
+                    "timestamp": time.time() - start_time
+                })
+
+            # 9. 检查是否到达函数结尾
+            if current_op.get("type") in ["ret", "retn", "retf"]:
+                break
+
+            # 10. 检查是否有执行错误
+            if any(keyword in step_output.lower() for keyword in ["error", "invalid", "failed"]):
+                break
+
+            # 11. 检查PC是否变化（防止无限循环）
+            new_regs_json = rz_instance.cmd("arj")
+            new_regs = json.loads(new_regs_json) if new_regs_json.strip() else {}
+            new_pc = new_regs.get("rip", new_regs.get("pc", new_regs.get("eip")))
+
+            # 如果PC没变化且不是循环指令，可能遇到了问题
+            if new_pc == current_pc and current_op.get("type") not in ["nop", "call"]:
+                break
+
+        # 12. 获取最终状态
+        final_regs_json = rz_instance.cmd("arj")
+        final_regs = json.loads(final_regs_json) if final_regs_json.strip() else {}
+
+        result_queue.put({
+            "success": True,
+            "final_regs": final_regs,
+            "trace": trace,
+            "vm_changes": vm_changes,
+            "steps_executed": len(trace),
+            "execution_time": time.time() - start_time,
+            "emulation_type": "RzIL"
+        })
+
     except Exception as e:
-        result_queue.put({"error": str(e)})
+        result_queue.put({
+            "error": str(e),
+            "success": False,
+            "execution_time": time.time() - start_time,
+            "partial_trace": trace if 'trace' in locals() else []
+        })
+    finally:
+        # RzIL资源清理
+        try:
+            # 重置到原始位置
+            rz_instance.cmd("s-")
+        except:
+            pass
+
+
+def emulate_function_with_timeout(rz_instance, function_name, max_steps=1000, timeout=30):
+    """
+    带超时的函数模拟包装器
+
+    Args:
+        rz_instance: rzpipe实例
+        function_name: 函数名
+        max_steps: 最大步数
+        timeout: 超时时间（秒）
+
+    Returns:
+        dict: 模拟结果
+    """
+    import queue
+    import threading
+
+    result_queue = queue.Queue()
+
+    # 启动模拟线程
+    emulation_thread = threading.Thread(
+        target=_emulate_function_target_rzil,
+        args=(rz_instance, function_name, max_steps, result_queue, timeout)
+    )
+
+    emulation_thread.daemon = True
+    emulation_thread.start()
+
+    try:
+        # 等待结果或超时
+        result = result_queue.get(timeout=timeout + 5)  # 给一些缓冲时间
+        return result
+    except queue.Empty:
+        return {
+            "error": f"Emulation timed out after {timeout} seconds",
+            "success": False
+        }
+    finally:
+        if emulation_thread.is_alive():
+            # 线程仍在运行，但我们已经超时了
+            pass
 
 def emulate_function(binary_path: str, function_name: str, max_steps: int = 100, timeout: int = 60) -> Dict[str, Any]:
     """
@@ -334,7 +456,7 @@ def emulate_function(binary_path: str, function_name: str, max_steps: int = 100,
         rz = _open_rzpipe(binary_path)
         result_queue = queue.Queue()
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(_emulate_function_target, rz, function_name, max_steps, result_queue)
+        future = executor.submit(_emulate_function_target_rzil, rz, function_name, max_steps, result_queue, timeout_seconds=timeout)
 
         try:
             return result_queue.get(timeout=timeout)
@@ -358,10 +480,27 @@ if __name__ == "__main__":
     print(f"Search results for '{query}':")
 
     for res in results:
-        print(f"  String: {res['string']}, Address: {res['str_addr']}")
+        print(f"  String: {res['string']}, Address: {hex(res['str_addr'])}")
         for ref in res['refs']:
-            print(f"    Ref: {ref['fcn']} at {hex(ref['offset'])} - {ref['disasm']}")
+            print(f"    Ref: {ref['caller']} at {hex(ref['calling_addr'])} - {ref['disasm']}")
+
+    # Test get_call_graph
+    call_graph = get_call_graph(binary_path, function_name)
+    print(f"\nCall graph for function '{function_name}':")
+    print("Nodes:")
+    for node in call_graph['nodes']:
+        print(f"  {node}")
+    print("Edges:")
+    for edge in call_graph['edges']:
+        print(f"  {edge}")
+
+    # Test get_cfg_basic_blocks
+    cfg_blocks = get_cfg_basic_blocks(binary_path, function_name)
+    print(f"\nCFG basic blocks for function '{function_name}':")
+    for block in cfg_blocks:
+        for addr, block in block.items():
+            print(f"  Address: {hex(addr)}, Block: {block}")
 
     # Emulate the function and print the result
-    result = emulate_function(binary_path, function_name)
+    result = emulate_function(binary_path, function_name, max_steps=10, timeout=3600)
     print(json.dumps(result, indent=2))
