@@ -74,8 +74,7 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dic
     Generates a call graph for a binary.
 
     If a function_name is provided, it generates a localized call graph for that
-    function up to a specified depth. Otherwise, it generates a global call graph
-    for the entire binary.
+    function. Otherwise, it generates a global call graph for the entire binary.
 
     Args:
         binary_path: The path to the binary file.
@@ -89,12 +88,12 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dic
         rz = _open_rzpipe(binary_path)
         try:
             if function_name:
-                # Get call graph for a specific function with depth
-                # agCdj: call graph with depth, JSON output
-                graph_json = rz.cmd(f"agc json @ {function_name}")
+                # Get call graph for a specific function
+                # agCj: call graph, JSON output
+                graph_json = rz.cmd(f"agC json @ {function_name}")
             else:
                 # Get global call graph
-                # agfj: function call graph, JSON output
+                # agCj: call graph, JSON output
                 graph_json = rz.cmd("agC json")
 
             if not graph_json:
@@ -140,9 +139,12 @@ def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[str,
         function_name: The name of the function to analyze.
 
     Returns:
-        A list of dictionaries, where each dictionary represents a basic block
-        and contains its 'offset', 'size', 'type', and a list of successor
-        offsets in 'succ'.
+        A list of dictionaries, where each dictionary represents a basic block.
+        The key of the dictionary is the block's address, and the value is a
+        dictionary containing 'addr', 'size', 'num_of_input_blocks',
+        'num_of_output_blocks', 'num_of_instructions', 'jump_to_addr',
+        'jump_to_func_with_offset', 'fall_through_addr' (if applicable), and
+        'fall_through_func_with_offset' (if applicable).
     """
     with rz_lock:
         rz = _open_rzpipe(binary_path)
@@ -203,15 +205,16 @@ def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, m
     Searches for references to strings that match a given query.
 
     Args:
-        binary_path: The substring or regex pattern to search for within the strings.
-        query: The substring or regex to search for.
+        binary_path: The path to the binary file.
+        query: The substring or regex pattern to search for within the strings.
         ignore_case: If True, performs a case-insensitive search.
         max_refs: The maximum number of references to return per matched string.
 
     Returns:
         A list of dictionaries, where each dictionary contains the matched 'string',
         its 'str_addr', and a list of 'refs' pointing to it. Each reference
-        includes the function name ('fcn'), 'offset', and 'disasm' of the instruction.
+        includes the 'caller' function name, 'calling_addr', 'disasm' of the
+        instruction, and 'opcode'.
     """
     all_strings = get_strings(binary_path)
 
@@ -264,14 +267,14 @@ import time
 
 def _emulate_function_target_rzil(rz_instance, function_name, max_steps, result_queue, timeout_seconds=30):
     """
-    现代化的RzIL模拟函数，充分利用Rizin的新架构
+    Modern RzIL emulation function, fully leveraging Rizin's new architecture.
 
     Args:
-        rz_instance: rzpipe实例
-        function_name: 要模拟的函数名
-        max_steps: 最大执行步数
-        result_queue: 结果队列
-        timeout_seconds: 超时时间（秒）
+        rz_instance: An active rzpipe instance.
+        function_name: The name of the function to emulate.
+        max_steps: Maximum number of execution steps.
+        result_queue: Queue to put the emulation result into.
+        timeout_seconds: Timeout in seconds.
     """
     start_time = time.time()
 
@@ -437,7 +440,7 @@ def emulate_function_with_timeout(rz_instance, function_name, max_steps=1000, ti
 
 def emulate_function(binary_path: str, function_name: str, max_steps: int = 100, timeout: int = 60) -> Dict[str, Any]:
     """
-    Emulates a function using ESIL for a number of steps and returns the trace.
+    Emulates a function using Rizin's RzIL for a number of steps and returns the trace.
 
     This function uses a separate thread to run the emulation, allowing for a
     timeout to prevent hangs on complex or infinite loops.
@@ -449,8 +452,10 @@ def emulate_function(binary_path: str, function_name: str, max_steps: int = 100,
         timeout: The maximum time in seconds to wait for the emulation to complete.
 
     Returns:
-        A dictionary containing the 'final_regs' and instruction 'trace',
-        or an 'error' message if the emulation failed or timed out.
+        A dictionary containing the emulation result, including 'success' status,
+        'final_regs', 'trace' of execution steps, 'vm_changes' (VM state changes),
+        'steps_executed', 'execution_time', and 'emulation_type'.
+        If an error occurs or timeout is reached, an 'error' message is included.
     """
     with rz_lock: # Acquire lock before opening rzpipe
         rz = _open_rzpipe(binary_path)
@@ -461,9 +466,9 @@ def emulate_function(binary_path: str, function_name: str, max_steps: int = 100,
         try:
             return result_queue.get(timeout=timeout)
         except queue.Empty:
-            return {"error": f"Emulation timed out after {timeout} seconds."}
+            return {"error": f"Emulation timed out after {timeout} seconds.", "success": False}
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return {"error": f"An unexpected error occurred: {str(e)}", "success": False}
         finally:
             future.cancel()
             executor.shutdown(wait=False)

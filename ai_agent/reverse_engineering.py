@@ -296,10 +296,9 @@ python_interpreter_tool = StructuredTool.from_function(
 class CallGraphToolInput(BaseModel):
     binary_path: str = Field(..., description="The path to the binary file.")
     function_name: Optional[str] = Field(None, description="The name of the function to generate the call graph for. If None, a global call graph is generated.")
-    depth: int = Field(3, description="The depth of the call graph to generate for a specific function.")
 
 def _get_call_graph_tool_impl(tool_input: CallGraphToolInput) -> Dict[str, Any]:
-    result = rzu.get_call_graph(tool_input.binary_path, tool_input.function_name, tool_input.depth)
+    result = rzu.get_call_graph(tool_input.binary_path, tool_input.function_name)
     return {"result": result, "need_refine": False, "prompts": []}
 
 call_graph_tool = StructuredTool.from_function(
