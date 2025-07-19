@@ -90,7 +90,7 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dic
             if function_name:
                 # Get call graph for a specific function
                 # agCj: call graph, JSON output
-                graph_json = rz.cmd(f"agC json @ {function_name}")
+                graph_json = rz.cmd(f"agc json @ {function_name}")
             else:
                 # Get global call graph
                 # agCj: call graph, JSON output

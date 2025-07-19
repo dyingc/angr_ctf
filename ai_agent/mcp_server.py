@@ -78,22 +78,21 @@ async def get_pseudo_code(binary_path: str, function_name: str) -> Dict[str, Any
     return get_pseudo_code_impl(binary_path, function_name)
 
 @mcp.tool()
-async def get_call_graph(binary_path: str, function_name: Optional[str] = None, depth: int = 3) -> Dict[str, Any]:
+async def get_call_graph(binary_path: str, function_name: str) -> Dict[str, Any]:
     """
     Generates a call graph for a binary. Global or for a specific function.
 
     Args:
         binary_path: The absolute path to the binary file.
         function_name: Optional. The function to start the graph from. If None, generates a global graph.
-        depth: The depth of the call graph when a function_name is specified.
 
     Returns:
         A dictionary containing the nodes and edges of the call graph.
     """
-    return rz_utils.get_call_graph(binary_path, function_name, depth)
+    return rz_utils.get_call_graph(binary_path, function_name)
 
 @mcp.tool()
-async def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[str, Any]]:
+async def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[int, Any]]:
     """
     Retrieves the basic blocks of a function's Control Flow Graph (CFG).
 
@@ -102,7 +101,8 @@ async def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dic
         function_name: The name of the function to analyze.
 
     Returns:
-        A list of dictionaries, each representing a basic block.
+        A list of dictionaries, each representing a basic block, with
+        {addr: {"addr": addr, "size": size, 'num_of_input_blocks': num_of_input_blocks, 'num_of_output_blocks': num_of_output_blocks, 'num_of_instructions': num_of_instructions, 'jump_to_addr': jump_to_addr, 'jump_to_func_with_offset': jump_to_func_with_offset}} format.
     """
     return rz_utils.get_cfg_basic_blocks(binary_path, function_name)
 
