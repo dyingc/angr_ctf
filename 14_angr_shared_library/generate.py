@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, random, os, tempfile, jinja2
+import sys, random, os, tempfile, jinja2, platform
 
 def generate(argv):
   if len(argv) != 3:
@@ -20,8 +20,24 @@ def generate(argv):
   with tempfile.NamedTemporaryFile(delete=False, suffix='.c', mode='w') as temp:
     temp.write(c_code)
     temp.seek(0)
-    os.system('gcc -I' + os.path.dirname(os.path.realpath(__file__))  + ' -fno-stack-protector -fpic -m32 -c -o 14_angr_shared_library.o ' + temp.name)
-    os.system('gcc -shared -m32 -o ' + os.path.join('/'.join(output_file.split('/')[0:-1]), 'lib' + output_file.split('/')[-1] + '.so') + ' 14_angr_shared_library.o')
+
+    # 根据架构选择合适的编译参数
+    arch = platform.machine()
+    if arch.startswith("x86"):
+      # 适用于 x86_64 架构的编译命令
+      compile_cmd1 = 'gcc -I' + os.path.dirname(os.path.realpath(__file__))  + ' -fno-stack-protector -fpic -m32 -c -o 14_angr_shared_library.o ' + temp.name
+      compile_cmd2 = 'gcc -shared -m32 -o ' + os.path.join('/'.join(output_file.split('/')[0:-1]), 'lib' + output_file.split('/')[-1] + '.so') + ' 14_angr_shared_library.o'
+    elif arch == 'arm64':
+      # 适用于 arm64 架构的编译命令 (Apple Silicon)
+      compile_cmd1 = 'gcc -I' + os.path.dirname(os.path.realpath(__file__))  + ' -fno-stack-protector -fpic -c -o 14_angr_shared_library.o ' + temp.name
+      compile_cmd2 = 'gcc -shared -o ' + os.path.join('/'.join(output_file.split('/')[0:-1]), 'lib' + output_file.split('/')[-1] + '.so') + ' 14_angr_shared_library.o'
+    else:
+      # 其他架构的默认编译命令
+      compile_cmd1 = 'gcc -I' + os.path.dirname(os.path.realpath(__file__))  + ' -fno-stack-protector -fpic -c -o 14_angr_shared_library.o ' + temp.name
+      compile_cmd2 = 'gcc -shared -o ' + os.path.join('/'.join(output_file.split('/')[0:-1]), 'lib' + output_file.split('/')[-1] + '.so') + ' 14_angr_shared_library.o'
+
+    os.system(compile_cmd1)
+    os.system(compile_cmd2)
     os.system('rm 14_angr_shared_library.o')
     os.system('chmod -x ' + os.path.join('/'.join(output_file.split('/')[0:-1]), 'lib' + output_file.split('/')[-1] + '.so'))
 
@@ -30,7 +46,20 @@ def generate(argv):
   with tempfile.NamedTemporaryFile(delete=False, suffix='.c', mode='w') as temp:
     temp.write(c_code)
     temp.seek(0)
-    os.system('gcc -fno-pie -no-pie -m32 -Wl,-R . -I . -L ' + '/'.join(output_file.split('/')[0:-1]) + ' -o ' + output_file + ' ' + temp.name + ' -l' + output_file.split('/')[-1])
+
+    # 根据架构选择合适的编译参数
+    arch = platform.machine()
+    if arch.startswith("x86"):
+        # 适用于 x86_64 架构的编译命令
+        compile_cmd3 = 'gcc -fno-pie -no-pie -m32 -Wl,-R . -I . -L ' + '/'.join(output_file.split('/')[0:-1]) + ' -o ' + output_file + ' ' + temp.name + ' -l' + output_file.split('/')[-1]
+    elif arch == 'arm64':
+        # 适用于 arm64 架构的编译命令 (Apple Silicon)
+        compile_cmd3 = 'gcc -fno-pie -no-pie -Wl,-R . -I . -L ' + '/'.join(output_file.split('/')[0:-1]) + ' -o ' + output_file + '_arm' + ' ' + temp.name + ' -l' + output_file.split('/')[-1]
+    else:
+        # 其他架构的默认编译命令
+        compile_cmd3 = 'gcc -fno-pie -no-pie -Wl,-R . -I . -L ' + '/'.join(output_file.split('/')[0:-1]) + ' -o ' + output_file + '_other' + ' ' + temp.name + ' -l' + output_file.split('/')[-1]
+    
+    os.system(compile_cmd3)
 
 if __name__ == '__main__':
   generate(sys.argv)

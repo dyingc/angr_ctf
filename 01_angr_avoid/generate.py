@@ -6,7 +6,7 @@
 # os: 提供使用操作系统依赖功能的方法。
 # tempfile: 用于创建临时文件和目录。
 # jinja2: 一个 Python 模板引擎，用于生成动态内容。
-import sys, random, os, tempfile, jinja2
+import sys, random, os, tempfile, jinja2, platform
 
 def check_string_recursive(array0, array1, random_list, bit):
   # 这个函数递归地构建 C 语言代码，用于比较两个数组（或字符串）的特定位。
@@ -64,7 +64,7 @@ def generate(argv):
   # 这个 `userdef` 字符串会被嵌入到生成的 C 代码中，作为程序的一部分。
   userdef = ''.join(random.choice(userdef_charset) for _ in range(8))
   # 重新生成一个包含 64 个随机布尔值（这会覆盖之前的列表）。
-  # 实际上，这里第二次生成 `random_list` 是多余的，因为第一次生成的列表没有被使用。
+  # 实际上，这里第二次生成 `random_list` ��多余的，因为第一次生成的列表没有被使用。
   # 最终 `check_string_recursive` 函数使用的是第二次生成的 `random_list`。
   random_list = [random.choice([True, False]) for _ in range(64)]
   # 调用 `check_string_recursive` 函数，生成用于 C 代码的条件字符串。
@@ -82,7 +82,7 @@ def generate(argv):
   # userdef: 替换模板中的 {{ userdef }}。
   # len_userdef: 替换模板中的 {{ len_userdef }}，即 userdef 的长度。
   # description: 替换模板中的 {{ description }}（此处为空）。
-  # check_string: 替换模板中的 {{ check_string }}，即生成的条件代码，这是本挑战的核心逻辑。
+  # check_string: 替换模板中的 {{ check_string }}，即生成的条件代��，这是本挑战的核心逻辑。
   c_code = t.render(userdef=userdef, len_userdef=len(userdef), description = '', check_string=check_string)
 
   # 创建一个临时的 C 源文件。
@@ -94,13 +94,22 @@ def generate(argv):
     temp.write(c_code)
     # 将文件指针移到文件开头（此处未直接使用，但通常用于后续读取）。
     temp.seek(0)
+    
+    # 根据架构选择合适的编译参数
+    arch = platform.machine()
+    if arch.startswith("x86"):
+      # 适用于 x86_64 架构的编译命令
+      compile_cmd = 'gcc -fno-pie -no-pie -fcf-protection=none -fno-stack-protector -m32 -O0 -g -o ' + output_file + ' ' + temp.name
+    elif arch == 'arm64':
+      # 适用于 arm64 架构的编译命令 (Apple Silicon)
+      compile_cmd = 'gcc -fno-stack-protector -O0 -g -o ' + output_file + '_arm' + ' ' + temp.name
+    else:
+      # 其他架构的默认编译命令
+      compile_cmd = 'gcc -fno-stack-protector -O0 -g -o ' + output_file + '_other' + ' ' + temp.name
+
     # 使用 gcc 编译 C 代码。
-    # -fno-pie: 禁用位置无关可执行文件生成。
-    # -no-pie: 禁用位置无关可执行文件生成（与 -fno-pie 重复，但常一起使用，确保二进制文件地址固定）。
-    # -m32: 生成 32 位可执行文件，与 Angr 的默认配置兼容。
-    # -o output_file: 指定输出的可执行文件名。
-    # temp.name: 临时 C 源文件的路径。
-    os.system('gcc -fno-pie -no-pie -m32 -o ' + output_file + ' ' + temp.name)
+    os.system(compile_cmd)
 
 if __name__ == '__main__':
   generate(sys.argv)
+
