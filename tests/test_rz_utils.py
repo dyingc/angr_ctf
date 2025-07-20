@@ -1,6 +1,7 @@
 import json
 import unittest
 from unittest.mock import patch
+
 # 被测模块
 from ai_agent import rz_utils
 from ai_agent.reverse_engineering import (
@@ -9,12 +10,13 @@ from ai_agent.reverse_engineering import (
     _get_strings_tool_impl,
     _search_string_refs_tool_impl,
     _emulate_function_tool_impl,
-    CallGraphToolInput, # 新增导入
-    CFGBasicBlocksToolInput, # 新增导入
-    GetStringsToolInput, # 新增导入
-    SearchStringRefsToolInput, # 新增导入
-    EmulateFunctionToolInput, # 新增导入
+    CallGraphToolInput,
+    CFGBasicBlocksToolInput,
+    GetStringsToolInput,
+    SearchStringRefsToolInput,
+    EmulateFunctionToolInput,
 )
+
 # -----------------------------------------------------------------------------
 # 构造一个 rzpipe 的假对象，用来截获 .cmd() 调用并返回伪造的 JSON 结果
 # -----------------------------------------------------------------------------
@@ -27,6 +29,7 @@ class RzPipeMock:
         self._emulation_pc = 0x401000
         self._emulation_step_count = 0
         self._function_info_cache = {} # 缓存函数信息
+
     # 主接口：根据传入的 command 字符串返回预设 JSON / 字符串
     def cmd(self, cmd_str: str):
         # ---- Call-graph ------------------------------------------------------
@@ -39,6 +42,16 @@ class RzPipeMock:
                 ]
             }
             return json.dumps(graph)
+        if cmd_str.startswith("agc json") or cmd_str.startswith("agc json @"):
+            # 局部调用图
+            graph = {
+                "nodes": [
+                    {"id": 0, "title": "main", "offset": 0x401000, "out_nodes": [1]},
+                    {"id": 1, "title": "helper", "offset": 0x401020, "out_nodes": []},
+                ]
+            }
+            return json.dumps(graph)
+
         # ---- CFG & basic-blocks ---------------------------------------------
         if cmd_str.startswith("afbj @"):
             blocks = [
@@ -61,6 +74,7 @@ class RzPipeMock:
             elif addr == 0x40400A:
                 return "sym.imp.final_func + 0x400A"
             return ""
+
         # ---- 字符串提取 / 引用 -------------------------------------------------
         if cmd_str == "izj":
             strs = [
@@ -80,6 +94,7 @@ class RzPipeMock:
                 },
             ]
             return json.dumps(strs)
+
         if cmd_str.startswith("axtj @"):
             addr = int(cmd_str.split("@")[1].strip())
             if addr == 0x402000: # References to "Hello" string
@@ -89,6 +104,7 @@ class RzPipeMock:
                 ]
                 return json.dumps(refs)
             return "[]"
+
         if cmd_str.startswith("afij @"):
             addr = int(cmd_str.split("@")[1].strip())
             if addr in [0x401005, 0x401010, 0x401000]:
@@ -96,6 +112,7 @@ class RzPipeMock:
                     self._function_info_cache[addr] = [{"offset": 0x401000, "name": "main", "realsz": 100, "file": "binary", "signature": "int main()"}]
                 return json.dumps(self._function_info_cache[addr])
             return "[]"
+
         # ---- ESIL 模拟 (RzIL) -------------------------------------------------------
         if cmd_str.startswith("s "): # 跳转到函数
             self._emulation_pc = 0x401000 # Reset PC for emulation
@@ -113,6 +130,7 @@ class RzPipeMock:
                 return json.dumps([{"disasm": "lea rdi, [0x402000]", "opcode": "488d...", "type": "lea"}])
             if addr == 0x401010:
                 return json.dumps([{"disasm": "mov eax, [0x402000]", "opcode": "8b05...", "type": "mov"}])
+
             if self._emulation_pc == 0x401000:
                 return json.dumps([{"disasm": "mov rax, 1", "opcode": "48c7c001000000", "type": "mov"}])
             elif self._emulation_pc == 0x401004:
@@ -128,8 +146,10 @@ class RzPipeMock:
             return f"VM state change at step {self._emulation_step_count}"
         elif cmd_str == "s-": # 重置到原始位置
             return ""
+
         # 其他未覆盖命令：返回空字符串
         return ""
+
     def cmdj(self, cmd_str: str):
         # For _get_function_via_addr's xrefs
         if cmd_str.startswith("axtj @"):
@@ -145,20 +165,26 @@ class RzPipeMock:
                 return [{"offset": 0x401000, "name": "main", "realsz": 100, "file": "binary", "signature": "int main()"}]
             return []
         return json.loads(self.cmd(cmd_str)) # Fallback to cmd for JSON output
+
     def quit(self):
         pass  # 关闭连接的空实现
+
+
 # -----------------------------------------------------------------------------
 # 单元测试主体
 # -----------------------------------------------------------------------------
 class TestRzUtilsFunctions(unittest.TestCase):
     """对 ai_agent.rz_utils 及其 reverse_engineering 包装函数进行单元测试"""
+
     def setUp(self):
         # 给 reverse_engineering 那些 wrapper 用
-        self.bin_path = "dummy/path/binary"
+        self.bin_path = "/Users/yingdong/VSCode/angr/angr_ctf/00_angr_find/00_angr_find_arm"
+
         # 动态打补丁：所有 _open_rzpipe 调用都返回我们的 mock
         patcher = patch("ai_agent.rz_utils._open_rzpipe", lambda _: RzPipeMock())
         self.addCleanup(patcher.stop)
         patcher.start()
+
     # ----------------------------- Call-graph ---------------------------------
     def test_get_call_graph_global(self):
         result = rz_utils.get_call_graph(self.bin_path)
@@ -169,14 +195,17 @@ class TestRzUtilsFunctions(unittest.TestCase):
             CallGraphToolInput(binary_path=self.bin_path)
         )
         self.assertEqual(wrapper_out["result"], result)
+
     def test_get_call_graph_local(self):
         result = rz_utils.get_call_graph(self.bin_path, "main")
+
         self.assertEqual(len(result["nodes"]), 2)
         self.assertEqual(result["nodes"][0]["name"], "main")
         self.assertEqual(result["nodes"][1]["name"], "helper")
         self.assertEqual(len(result["edges"]), 1)
         self.assertEqual(result["edges"][0]["from"], 0) # id of main
         self.assertEqual(result["edges"][0]["to"], 1) # id of helper
+
     # --------------------------- CFG basic blocks -----------------------------
     def test_get_cfg_basic_blocks(self):
         blocks = rz_utils.get_cfg_basic_blocks(self.bin_path, "main")
@@ -222,6 +251,7 @@ class TestRzUtilsFunctions(unittest.TestCase):
             )
         )
         self.assertEqual(wrapper_blocks["result"], blocks)
+
     # ------------------------------ Strings -----------------------------------
     def test_get_strings_min_len(self):
         strs = rz_utils.get_strings(self.bin_path, min_length=4)
@@ -232,6 +262,7 @@ class TestRzUtilsFunctions(unittest.TestCase):
             GetStringsToolInput(binary_path=self.bin_path, min_length=4)
         )
         self.assertEqual(wrapper_out["result"], strs)
+
     # ------------------------- Search string refs -----------------------------
     def test_search_string_refs(self):
         refs = rz_utils.search_string_refs(self.bin_path, "Hello") # Use "Hello" to match exactly
@@ -239,16 +270,19 @@ class TestRzUtilsFunctions(unittest.TestCase):
         self.assertEqual(refs[0]["string"], "Hello")
         self.assertEqual(refs[0]["str_addr"], 0x402000)
         self.assertEqual(len(refs[0]["refs"]), 2)
+
         # Check first ref
         self.assertEqual(refs[0]["refs"][0]["caller"], "main")
         self.assertEqual(refs[0]["refs"][0]["calling_addr"], 0x401005)
         self.assertEqual(refs[0]["refs"][0]["disasm"], "lea rdi, [0x402000]")
         self.assertEqual(refs[0]["refs"][0]["opcode"], "488d...")
+
         # Check second ref
         self.assertEqual(refs[0]["refs"][1]["caller"], "main")
         self.assertEqual(refs[0]["refs"][1]["calling_addr"], 0x401010)
         self.assertEqual(refs[0]["refs"][1]["disasm"], "mov eax, [0x402000]")
         self.assertEqual(refs[0]["refs"][1]["opcode"], "8b05...")
+
         # 包装器
         wrapper_out = _search_string_refs_tool_impl(
             SearchStringRefsToolInput(
@@ -256,49 +290,62 @@ class TestRzUtilsFunctions(unittest.TestCase):
             )
         )
         self.assertEqual(wrapper_out["result"], refs)
+
     # --------------------------- Emulate function -----------------------------
-    @patch('ai_agent.rz_utils._emulate_function_target_rzil')
+    @patch('ai_agent.rz_emulator._improved_rzil_emulation') # Changed from rz_utils to rz_emulator
     def test_emulate_function(self, mock_emulate):
-        # Setup mock for _emulate_function_target_rzil
+        # Setup mock for _improved_rzil_emulation
         def mock_emulate_side_effect(rz_instance, function_name, max_steps, result_queue, timeout_seconds):
             result_queue.put({
                 "success": True,
-                "final_regs": {"rip": 0x40100c, "rax": 3},
-                "trace": [
-                    {"pc": hex(0x401000), "op": "mov rax, 1", "regs": {"rax": 0}},
-                    {"pc": hex(0x401004), "op": "add rax, 1", "regs": {"rax": 1}},
-                    {"pc": hex(0x401008), "op": "ret", "regs": {"rax": 2}},
+                "execution_summary": {
+                    "steps_executed": 3,
+                    "execution_time": 0.1,
+                    "memory_setup_success": True,
+                    "architecture": "x86 64-bit"
+                },
+                "final_registers": {"rip": 0x40100c, "rax": 3},
+                "execution_trace": [
+                    {"step": 0, "pc": hex(0x401000), "instruction": "mov rax, 1", "opcode": "48c7c001000000", "type": "mov", "registers": {"rax": 0}, "timestamp": 0.0, "step_duration": 0.0},
+                    {"step": 1, "pc": hex(0x401004), "instruction": "add rax, 1", "opcode": "4883c001", "type": "add", "registers": {"rax": 1}, "timestamp": 0.0, "step_duration": 0.0},
+                    {"step": 2, "pc": hex(0x401008), "instruction": "ret", "opcode": "c3", "type": "ret", "registers": {"rax": 2}, "timestamp": 0.0, "step_duration": 0.0},
                 ],
-                "vm_changes": [
-                    {"step": 0, "changes": "VM state change at step 1"},
-                    {"step": 1, "changes": "VM state change at step 2"},
-                    {"step": 2, "changes": "VM state change at step 3"},
+                "vm_state_changes": [
+                    {"step": 0, "changes": "VM state change at step 1", "timestamp": 0.0},
+                    {"step": 1, "changes": "VM state change at step 2", "timestamp": 0.0},
+                    {"step": 2, "changes": "VM state change at step 3", "timestamp": 0.0},
                 ],
-                "steps_executed": 3,
-                "execution_time": 0.1,
-                "emulation_type": "RzIL"
+                "setup_log": ["Setup log entry 1", "Setup log entry 2"],
+                "emulation_type": "RzIL_v2"
             })
         mock_emulate.side_effect = mock_emulate_side_effect
+
         result = rz_utils.emulate_function(self.bin_path, "main", max_steps=5, timeout=10)
+
         self.assertTrue(result["success"])
-        self.assertIn("trace", result)
-        self.assertEqual(len(result["trace"]), 3)
-        self.assertIn("final_regs", result)
-        self.assertIn("vm_changes", result)
-        self.assertEqual(result["steps_executed"], 3)
-        self.assertEqual(result["emulation_type"], "RzIL")
+        self.assertIn("execution_trace", result)
+        self.assertEqual(len(result["execution_trace"]), 3)
+        self.assertIn("final_registers", result)
+        self.assertIn("vm_state_changes", result)
+        self.assertEqual(result["execution_summary"]["steps_executed"], 3)
+        self.assertEqual(result["emulation_type"], "RzIL_v2")
+
         # Check trace content
-        self.assertEqual(result["trace"][0]["pc"], hex(0x401000))
-        self.assertEqual(result["trace"][0]["op"], "mov rax, 1")
-        self.assertEqual(result["trace"][0]["regs"]["rax"], 0)
-        self.assertEqual(result["trace"][1]["pc"], hex(0x401004))
-        self.assertEqual(result["trace"][1]["op"], "add rax, 1")
-        self.assertEqual(result["trace"][1]["regs"]["rax"], 1)
-        self.assertEqual(result["trace"][2]["pc"], hex(0x401008))
-        self.assertEqual(result["trace"][2]["op"], "ret")
-        self.assertEqual(result["trace"][2]["regs"]["rax"], 2)
+        self.assertEqual(result["execution_trace"][0]["pc"], hex(0x401000))
+        self.assertEqual(result["execution_trace"][0]["instruction"], "mov rax, 1")
+        self.assertEqual(result["execution_trace"][0]["registers"]["rax"], 0)
+
+        self.assertEqual(result["execution_trace"][1]["pc"], hex(0x401004))
+        self.assertEqual(result["execution_trace"][1]["instruction"], "add rax, 1")
+        self.assertEqual(result["execution_trace"][1]["registers"]["rax"], 1)
+
+        self.assertEqual(result["execution_trace"][2]["pc"], hex(0x401008))
+        self.assertEqual(result["execution_trace"][2]["instruction"], "ret")
+        self.assertEqual(result["execution_trace"][2]["registers"]["rax"], 2)
+
         # Check final regs
-        self.assertEqual(result["final_regs"]["rax"], 3)
+        self.assertEqual(result["final_registers"]["rax"], 3)
+
         # 包装器
         wrapper_out = _emulate_function_tool_impl(
             EmulateFunctionToolInput(
@@ -307,6 +354,8 @@ class TestRzUtilsFunctions(unittest.TestCase):
         )
         # Note: The wrapper calls emulate_function, which is now fully mocked at the rzil level
         self.assertTrue(wrapper_out["result"]["success"])
-        self.assertEqual(wrapper_out["result"]["steps_executed"], 3)
+        self.assertEqual(wrapper_out["result"]["execution_summary"]["steps_executed"], 3)
+
+
 if __name__ == "__main__":
     unittest.main()
