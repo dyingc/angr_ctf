@@ -11,9 +11,16 @@ from typing import Dict, Any, List, Optional, Tuple
 import threading
 import queue
 import time
+from ai_agent.libs.lib_emulate import (
+    _simulate_external_call_effects,
+)
 
 # Global lock for rzpipe operations to prevent race conditions
 rz_lock = threading.Lock()
+
+# Two global variables
+arch: str = None
+bits: int = None
 
 def _open_rzpipe(binary_path: str) -> rzpipe.open:
     """
@@ -252,33 +259,30 @@ def _merge_multi_step_changes(all_outputs: List[str]) -> str:
 
     return json.dumps(net_changes) if net_changes else ""
 
-def _is_call_instruction(instruction_type: str, instruction_disasm: str) -> bool:
+def _is_external_function_call(current_op: Dict[str, Any], instruction_disasm: str) -> bool:
     """
-    判断指令是否为函数调用指令
+    判断是否为外部函数调用
 
     Args:
-        instruction_type: 指令类型
+        current_op: 当前指令的信息字典
         instruction_disasm: 指令反汇编文本
 
     Returns:
-        bool: 如果是调用指令返回True，否则返回False
+        bool: 如果是外部函数调用返回True
     """
-    # 检查指令类型
-    call_types = ["call", "ucall", "icall"]
-    if instruction_type.lower() in call_types:
+    # 检查是否调用 sym.imp.* (imported symbols)
+    if "sym.imp." in instruction_disasm:
         return True
 
-    # 检查指令助记符（针对不同架构）
-    call_mnemonics = [
-        "call", "bl", "blr", "blx",  # x86, ARM64, ARM32
-        "jal", "jalr",               # RISC-V, MIPS
-        "bsr",                       # m68k
-        "callf", "calln"             # 其他变体
-    ]
+    # 检查是否调用 reloc.* (relocations)
+    if "reloc." in instruction_disasm:
+        return True
 
-    disasm_lower = instruction_disasm.lower()
-    for mnemonic in call_mnemonics:
-        if disasm_lower.startswith(mnemonic + " ") or disasm_lower == mnemonic:
+    # 检查跳转目标是否在外部段
+    # 可以通过 flags 字段或者目标地址判断
+    flags = current_op.get("flags", [])
+    for flag in flags:
+        if isinstance(flag, str) and ("imp." in flag or "reloc." in flag):
             return True
 
     return False
@@ -313,8 +317,6 @@ def rzil_step_over(rz_instance, num_steps: int = 1) -> str:
             pc_output = rz_instance.cmd("aezvj PC")
             pc_data = json.loads(pc_output)
             current_pc = pc_data.get("PC", "0x0")
-            if current_pc == '0x00000001000005d0':
-                print("📍 Eric says: Reached target PC - triggering special behavior...")
         except Exception as e:
             print(f"Failed to get current PC: {e}")
             return ""
@@ -344,7 +346,7 @@ def rzil_step_over(rz_instance, num_steps: int = 1) -> str:
         print(f"Type: {instruction_type}")
 
         # 判断是否为函数调用指令
-        is_call_instruction = instruction_type == 'call' # _is_call_instruction(instruction_type, instruction_disasm)
+        is_call_instruction = instruction_type == 'call'
 
         if is_call_instruction:
             print("📞 Detected call instruction - stepping over...")
@@ -366,8 +368,12 @@ def rzil_step_over(rz_instance, num_steps: int = 1) -> str:
 
                 print(f"Stepping over call to: {next_pc}")
 
-                # 使用 aezsue 执行到下一条指令
-                exec_output = rz_instance.cmd(f"aezsue {next_pc}")
+                # 执行到下一条指令
+                if _is_external_function_call(current_op, instruction_disasm):
+                    print("Simulating external call effects...")
+                    exec_output = _simulate_external_call_effects(rz_instance, instruction_disasm, current_op, arch, bits)
+                else:
+                    exec_output = rz_instance.cmd(f"aezsue {next_pc}")
                 print(f"Step over execution output: {exec_output}")
 
                 # 验证是否成功到达目标地址
@@ -608,6 +614,7 @@ def _improved_rzil_emulation(
             return
 
         arch_info = binary_info.get("bin", {})
+        global arch, bits
         arch = arch_info.get("arch", "unknown")
         bits = arch_info.get("bits", 64)
         setup_log.append(f"Detected architecture: {arch} {bits}-bit")
@@ -754,386 +761,538 @@ def emulate_function(
         finally:
             rz.quit()
 
-# ========== LEGACY FUNCTIONS (kept for compatibility) ==========
+# ========== 使用示例和测试代码 ==========
 
-def _initialize_rzil_vm(rz_instance, result_queue):
+def test_external_call_simulation():
     """
-    初始化 RzIL VM 并处理初始化失败的情况。
+    测试外部调用模拟功能的示例代码
     """
-    # 3. 初始化 RzIL VM
-    init_result = rz_instance.cmd("aezi")
-    if "error" in init_result.lower() or "fail" in init_result.lower():
-        result_queue.put({
-            "error": f"Failed to initialize RzIL VM: {init_result}",
-            "success": False
-        })
-        return False
-    return True
+    print("🧪 Testing external call simulation...")
 
-def _get_arch_specific_registers(binary_info):
-    """
-    根据二进制信息确定架构和位数，返回相应的栈指针、基指针和初始栈地址。
-    """
-    # 获取架构信息来确定正确的寄存器名称
-    arch_info = binary_info.get("bin", {})
-    arch = arch_info.get("arch", "x86")
-    bits = arch_info.get("bits", 64)
+    # 示例：模拟不同架构下的printf调用
+    test_cases = [
+        {
+            "arch": "x86",
+            "bits": 64,
+            "instruction": "call sym.imp.printf",
+            "current_op": {"offset": 0x1000, "size": 5}
+        },
+        {
+            "arch": "arm",
+            "bits": 64,
+            "instruction": "bl sym.imp.printf",
+            "current_op": {"offset": 0x2000, "size": 4}
+        },
+        {
+            "arch": "ppc",
+            "bits": 32,
+            "instruction": "bl reloc.printf",
+            "current_op": {"offset": 0x3000, "size": 4}
+        }
+    ]
 
-    # 根据架构设置合适的栈指针
-    if arch == "x86" and bits == 64:
-        # x86_64 架构
-        stack_pointer = "rsp"
-        base_pointer = "rbp"
-        initial_sp = 0x7fffff000000  # 简化的栈地址
-    elif arch == "x86" and bits == 32:
-        # x86_32 架构
-        stack_pointer = "esp"
-        base_pointer = "ebp"
-        initial_sp = 0xbffff000
-    elif arch == "arm" and bits == 64:
-        # ARM64 架构
-        stack_pointer = "sp"
-        base_pointer = "fp"
-        initial_sp = 0x7fffff000000
-    elif arch == "arm" and bits == 32:
-        # ARM32 架构
-        stack_pointer = "sp"
-        base_pointer = "fp"
-        initial_sp = 0xbffff000
-    else:
-        # 默认值
-        stack_pointer = "sp"
-        base_pointer = "fp"
-        initial_sp = 0x7fffff000000
+    for test_case in test_cases:
+        print(f"\n--- Testing {test_case['arch']} {test_case['bits']}-bit ---")
 
-    # 设置栈指针（确保16字节对齐）
-    aligned_sp = initial_sp & ~0xF
-    return arch, bits, stack_pointer, base_pointer, aligned_sp
+        # 模拟rzpipe实例（在实际使用中这会是真实的rzpipe对象）
+        class MockRzInstance:
+            def __init__(self, arch, bits):
+                self.arch = arch
+                self.bits = bits
+                self.registers = {}
 
-def _set_initial_registers(rz_instance, stack_pointer, base_pointer, aligned_sp):
-    """
-    设置初始寄存器值。
-    """
-    rz_instance.cmd(f"aezv {stack_pointer} {hex(aligned_sp)}")
-    rz_instance.cmd(f"aezv {base_pointer} {hex(aligned_sp)}")
+            def cmd(self, command):
+                if command.startswith("aezv") and "0x" in command:
+                    # 模拟设置寄存器
+                    parts = command.split()
+                    if len(parts) >= 3:
+                        reg_name = parts[1]
+                        value = parts[2]
+                        self.registers[reg_name] = value
+                        return f"{reg_name}: {value}"
+                elif command.startswith("aezv"):
+                    # 模拟读取寄存器
+                    reg_name = command.split()[1]
+                    return self.registers.get(reg_name, "0x0")
+                return ""
 
-    # 5. 验证设置
-    current_sp = rz_instance.cmd(f"aezv {stack_pointer}")
-    print(f"Stack pointer ({stack_pointer}) set to: {current_sp.strip()}")
+            def cmdj(self, command):
+                if command == "ij":
+                    return {
+                        "bin": {
+                            "arch": self.arch,
+                            "bits": self.bits
+                        }
+                    }
+                return {}
 
-def _get_current_emulation_state(rz_instance, start_time, step):
-    """
-    获取当前寄存器状态、PC、指令信息和 RzIL 表示。
-    """
-    # 7. 获取当前寄存器状态
-    current_regs = {}
-    try:
-        regs_json = rz_instance.cmd("aezvj")  # 使用 JSON 格式获取 VM 寄存器
-        if not regs_json.strip():
-            # 如果 aezvj 不工作，尝试标准的寄存器命令
-            regs_json = rz_instance.cmd("drj")
-        current_regs = json.loads(regs_json) if regs_json.strip() else {}
-    except json.JSONDecodeError:
-        current_regs = {}
+        mock_rz = MockRzInstance(test_case["arch"], test_case["bits"])
 
-    # 8. 获取当前PC
-    current_pc = None
-    pc_candidates = ["rip", "pc", "eip", "ip", "PC"]
-    for pc_reg in pc_candidates:
-        if pc_reg in current_regs:
-            current_pc = current_regs[pc_reg]
-            break
-
-    if current_pc is None:
-        print("Cannot determine current PC, stopping execution")
-        return None, None, None, None, None
-
-    # 9. 获取当前指令信息
-    current_op = {}
-    try:
-        disasm_json = rz_instance.cmd(f"pdj 1 @ {current_pc}")
-        if disasm_json.strip():
-            current_op = json.loads(disasm_json)[0]
-        else:
-            current_op = {}
-    except (json.JSONDecodeError, IndexError):
-        current_op = {}
-
-    # 10. 获取RzIL表示（如果可用）
-    rzil_repr = ""
-    try:
-        rzil_repr = rz_instance.cmd(f"aoip 1 @ {current_pc}")
-    except:
-        rzil_repr = "N/A"
-
-    # 11. 记录当前状态
-    step_info = {
-        "step": step,
-        "pc": hex(current_pc) if isinstance(current_pc, int) else str(current_pc),
-        "op": current_op.get("disasm", ""),
-        "opcode": current_op.get("opcode", ""),
-        "type": current_op.get("type", ""),
-        "rzil": rzil_repr.strip(),
-        "regs": current_regs,
-        "timestamp": time.time() - start_time
-    }
-    return step_info, current_pc, current_op, current_regs, rzil_repr
-
-def _check_emulation_termination(step_info, step_output, timeout_seconds, start_time, trace):
-    """
-    检查模拟是否应该终止（超时、返回指令、执行错误、无限循环）。
-    返回 True 表示应该终止，False 表示继续。
-    """
-    # 超时检查
-    if time.time() - start_time > timeout_seconds:
-        print(f"Execution timed out after {timeout_seconds} seconds")
-        return True
-
-    # 检查是否到达函数结尾
-    op_type = step_info.get("type", "")
-    if op_type in ["ret", "retn", "retf", "return"]:
-        print(f"Reached return instruction at step {step_info['step']}")
-        return True
-
-    # 检查是否有执行错误
-    if step_output and any(keyword in str(step_output).lower() for keyword in ["error", "invalid", "failed"]):
-        print(f"Execution error at step {step_info['step']}: {step_output}")
-        return True
-
-    # 简单的无限循环检测
-    if step_info['step'] > 0 and len(trace) >= 2:
-        prev_pc = trace[-2]["pc"]
-        if prev_pc == step_info["pc"] and op_type not in ["nop", "call"]:
-            print(f"Possible infinite loop detected at step {step_info['step']}")
-            return True
-    return False
-
-def _emulate_function_target_rzil(rz_instance, function_name, max_steps, result_queue, timeout_seconds=30):
-    """
-    修正后的 RzIL 模拟函数，移除了不存在的命令并优化了内存处理。
-
-    NOTE: This is the legacy function - use emulate_function() for the improved version.
-
-    Args:
-        rz_instance: 活跃的 rzpipe 实例。
-        function_name: 要模拟的函数名称。
-        max_steps: 最大执行步数。
-        result_queue: 用于放置模拟结果的队列。
-        timeout_seconds: 超时时间（秒）。
-    """
-    start_time = time.time()
-    original_offset = None
-    trace = []
-    vm_changes = []
-
-    try:
-        # 1. 保存当前偏移量并跳转到函数
-        original_offset = rz_instance.cmd("s").strip()
-        rz_instance.cmd(f"s {function_name}")
-
-        # 2. 获取二进制信息
-        binary_info = rz_instance.cmdj("ij")
-        if not binary_info:
-            result_queue.put({
-                "error": "Failed to get binary information",
-                "success": False
-            })
-            return
-
-        # 3. 初始化 RzIL VM
-        if not _initialize_rzil_vm(rz_instance, result_queue):
-            return
-
-        # 4. 设置基本的寄存器初始值
-        arch, bits, stack_pointer, base_pointer, aligned_sp = _get_arch_specific_registers(binary_info)
-        _set_initial_registers(rz_instance, stack_pointer, base_pointer, aligned_sp)
-
-        # 6. 开始执行循环
-        for step in range(max_steps):
-            step_info, current_pc, current_op, current_regs, rzil_repr = _get_current_emulation_state(rz_instance, start_time, step)
-
-            if current_pc is None:
-                # Cannot determine current PC, stopping execution (handled in _get_current_emulation_state)
-                break
-
-            trace.append(step_info)
-
-            # 12. 执行一步并记录状态变化
-            try:
-                step_output = rz_instance.cmd("aezsej 1")
-                if step_output.strip():
-                    try:
-                        step_output_parsed = json.loads(step_output)
-                    except json.JSONDecodeError:
-                        step_output_parsed = step_output
-                else:
-                    step_output_parsed = None
-            except Exception as e:
-                print(f"执行错误: {e}")
-                break
-
-            # 记录VM状态变化
-            if step_output_parsed:
-                vm_changes.append({
-                    "step": step,
-                    "changes": step_output_parsed,
-                    "timestamp": time.time() - start_time
-                })
-
-            # 检查是否应该终止模拟
-            if _check_emulation_termination(step_info, step_output, timeout_seconds, start_time, trace):
-                break
-
-        # 16. 获取最终状态
-        final_regs = {}
+        # 执行测试
         try:
-            final_regs_json = rz_instance.cmd("aezvj")
-            if not final_regs_json.strip():
-                final_regs_json = rz_instance.cmd("arj")
-            final_regs = json.loads(final_regs_json) if final_regs_json.strip() else {}
-        except json.JSONDecodeError:
-            final_regs = {}
+            result = _simulate_external_call_effects(
+                mock_rz,
+                test_case["instruction"],
+                test_case["current_op"],
+                test_case["arch"],
+                test_case["bits"]
+            )
 
-        result_queue.put({
-            "success": True,
-            "final_regs": final_regs,
-            "trace": trace,
-            "vm_changes": vm_changes,
-            "steps_executed": len(trace),
-            "execution_time": time.time() - start_time,
-            "emulation_type": "RzIL_Legacy",
-            "memory_setup": {
-                "architecture": arch,
-                "bits": bits,
-                "stack_pointer": stack_pointer,
-                "initial_sp": hex(aligned_sp)
-            }
-        })
+            print(f"✅ Simulation result: {result}")
 
-    except Exception as e:
-        result_queue.put({
-            "error": str(e),
-            "success": False,
-            "execution_time": time.time() - start_time,
-            "partial_trace": trace if 'trace' in locals() else []
-        })
-    finally:
-        # 清理：恢复到原始偏移量
-        if original_offset:
-            try:
-                rz_instance.cmd(f"s {original_offset}")
-            except:
-                pass
+        except Exception as e:
+            print(f"❌ Test failed: {e}")
 
-def setup_realistic_memory_layout(rz_instance):
+def enhanced_emulate_function_example():
     """
-    设置更真实的内存布局，包括代码段、数据段和栈段
-
-    NOTE: This function uses non-existent commands and is kept for legacy compatibility only.
-    Use _setup_memory_with_malloc() instead.
+    展示如何使用增强版的模拟功能
     """
-    print("WARNING: setup_realistic_memory_layout() uses non-existent 'aezm' command")
-    print("Please use the updated emulate_function() which uses malloc:// protocol")
-    return False
+    print("\n" + "="*60)
+    print("🚀 Enhanced RzIL Emulation Example")
+    print("="*60)
 
-def emulate_function_with_timeout(rz_instance, function_name, max_steps=1000, timeout=30):
-    """
-    带超时的函数模拟包装器
+    # 使用示例
+    binary_path = "/Users/yingdong/VSCode/angr/angr_ctf/00_angr_find/00_angr_find_arm"
+    function_name = "entry0"
 
-    NOTE: This is a legacy function. Use emulate_function() for the improved version.
-
-    Args:
-        rz_instance: rzpipe实例
-        function_name: 函数名
-        max_steps: 最大步数
-        timeout: 超时时间（秒）
-
-    Returns:
-        dict: 模拟结果
-    """
-    result_queue = queue.Queue()
-
-    # 启动模拟线程
-    emulation_thread = threading.Thread(
-        target=_emulate_function_target_rzil,
-        args=(rz_instance, function_name, max_steps, result_queue, timeout)
+    # 调用增强版模拟函数，支持自定义参数
+    result = emulate_function(
+        binary_path=binary_path,
+        function_name=function_name,
+        max_steps=100,
+        timeout=60,
+        stack_bytes=64,           # 读取64字节的栈快照
+        stack_size=0x20000,       # 128KB栈大小
+        stack_base=0x70000000,    # 栈基地址
+        data_size=0x2000,         # 8KB数据区域
+        data_base=0x60000000      # 数据区域基地址
     )
 
-    emulation_thread.daemon = True
-    emulation_thread.start()
-
-    try:
-        # 等待结果或超时
-        result = result_queue.get(timeout=timeout + 5)  # 给一些缓冲时间
-        return result
-    except queue.Empty:
-        return {
-            "error": f"Emulation timed out after {timeout} seconds",
-            "success": False
-        }
-    finally:
-        if emulation_thread.is_alive():
-            # 线程仍在运行，但我们已经超时了
-            pass
-
-
-if __name__ == "__main__":
-    binary_path = "/Users/yingdong/VSCode/angr/angr_ctf/00_angr_find/00_angr_find_arm"  # Example binary path
-    function_name = "entry0"  # Example function name
-
-    print("=" * 60)
-    print("Rizin Binary Analysis with Improved RzIL Emulation")
-    print("=" * 60)
-
-    # Test the improved emulation function
-    print(f"\n🚀 Testing improved RzIL emulation:")
-    result = emulate_function(binary_path, function_name, max_steps=100, timeout=3600)
-
-    print("\n" + "=" * 40)
-    print("🔍 Emulation Results Analysis")
-    print("=" * 40)
-
     if result.get("success"):
-        print("✅ Emulation completed successfully!")
+        print("✅ Enhanced emulation completed successfully!")
 
-        # Display execution summary
-        summary = result.get("execution_summary", {})
-        print(f"📊 Steps executed: {summary.get('steps_executed', 0)}")
-        print(f"⏱️  Execution time: {summary.get('execution_time', 0):.3f}s")
-        print(f"🏗️  Memory setup: {'✅' if summary.get('memory_setup_success') else '❌'}")
-        print(f"🔧 Architecture: {summary.get('architecture', 'unknown')}")
-
-        # Display execution trace
+        # 分析执行轨迹中的外部调用
         trace = result.get("execution_trace", [])
-        if trace:
-            print(f"\n📋 Execution trace:")
-            for step_info in trace:
-                step_num = step_info.get("step", "?")
-                pc = step_info.get("pc", "?")
-                instruction = step_info.get("instruction", "?")
-                duration = step_info.get("step_duration", 0)
+        external_calls = []
 
-                status = "✅"
-                if step_info.get("memory_warning"):
-                    status = "⚠️"
-                elif step_info.get("execution_error"):
-                    status = "❌"
+        for step in trace:
+            instruction = step.get("instruction", "")
+            if any(keyword in instruction.lower() for keyword in ["sym.imp.", "reloc.", "plt"]):
+                external_calls.append({
+                    "step": step.get("step"),
+                    "pc": step.get("pc"),
+                    "instruction": instruction,
+                    "type": step.get("type")
+                })
 
-                print(f"  {status} Step {step_num}: {pc} - {instruction} ({duration:.3f}s)")
+        if external_calls:
+            print(f"\n📞 Found {len(external_calls)} external calls:")
+            for call in external_calls:
+                print(f"  Step {call['step']}: {call['pc']} - {call['instruction']}")
 
-                if step_info.get("memory_warning"):
-                    print(f"    ⚠️  Memory warning: {step_info['memory_warning']}")
-
-        # Display VM state changes
+        # 分析VM状态变化
         vm_changes = result.get("vm_state_changes", [])
-        if vm_changes:
-            print(f"\n🔄 VM state changes: {len(vm_changes)} changes recorded")
+        external_effects = 0
+
+        for change_record in vm_changes:
+            changes = change_record.get("changes", [])
+            for change in changes:
+                if isinstance(change, dict) and change.get("type") in ["external_call", "simulation_error"]:
+                    external_effects += 1
+
+        if external_effects > 0:
+            print(f"🎭 External call effects simulated: {external_effects}")
 
     else:
-        print("❌ Emulation failed")
-        print(f"Error: {result.get('error', 'Unknown error')}")
+        print(f"❌ Enhanced emulation failed: {result.get('error')}")
 
-        if result.get("setup_log"):
-            print("\n📋 Setup log:")
-            for log_entry in result["setup_log"]:
-                print(f"  • {log_entry}")
+if __name__ == "__main__":
+    # 运行测试
+    test_external_call_simulation()
+
+    # 显示使用示例
+    enhanced_emulate_function_example()
+
+# # ========== LEGACY FUNCTIONS (kept for compatibility) ==========
+
+# def _initialize_rzil_vm(rz_instance, result_queue):
+#     """
+#     初始化 RzIL VM 并处理初始化失败的情况。
+#     """
+#     # 3. 初始化 RzIL VM
+#     init_result = rz_instance.cmd("aezi")
+#     if "error" in init_result.lower() or "fail" in init_result.lower():
+#         result_queue.put({
+#             "error": f"Failed to initialize RzIL VM: {init_result}",
+#             "success": False
+#         })
+#         return False
+#     return True
+
+# def _get_arch_specific_registers(binary_info):
+#     """
+#     根据二进制信息确定架构和位数，返回相应的栈指针、基指针和初始栈地址。
+#     """
+#     # 获取架构信息来确定正确的寄存器名称
+#     arch_info = binary_info.get("bin", {})
+#     arch = arch_info.get("arch", "x86")
+#     bits = arch_info.get("bits", 64)
+
+#     # 根据架构设置合适的栈指针
+#     if arch == "x86" and bits == 64:
+#         # x86_64 架构
+#         stack_pointer = "rsp"
+#         base_pointer = "rbp"
+#         initial_sp = 0x7fffff000000  # 简化的栈地址
+#     elif arch == "x86" and bits == 32:
+#         # x86_32 架构
+#         stack_pointer = "esp"
+#         base_pointer = "ebp"
+#         initial_sp = 0xbffff000
+#     elif arch == "arm" and bits == 64:
+#         # ARM64 架构
+#         stack_pointer = "sp"
+#         base_pointer = "fp"
+#         initial_sp = 0x7fffff000000
+#     elif arch == "arm" and bits == 32:
+#         # ARM32 架构
+#         stack_pointer = "sp"
+#         base_pointer = "fp"
+#         initial_sp = 0xbffff000
+#     else:
+#         # 默认值
+#         stack_pointer = "sp"
+#         base_pointer = "fp"
+#         initial_sp = 0x7fffff000000
+
+#     # 设置栈指针（确保16字节对齐）
+#     aligned_sp = initial_sp & ~0xF
+#     return arch, bits, stack_pointer, base_pointer, aligned_sp
+
+# def _set_initial_registers(rz_instance, stack_pointer, base_pointer, aligned_sp):
+#     """
+#     设置初始寄存器值。
+#     """
+#     rz_instance.cmd(f"aezv {stack_pointer} {hex(aligned_sp)}")
+#     rz_instance.cmd(f"aezv {base_pointer} {hex(aligned_sp)}")
+
+#     # 5. 验证设置
+#     current_sp = rz_instance.cmd(f"aezv {stack_pointer}")
+#     print(f"Stack pointer ({stack_pointer}) set to: {current_sp.strip()}")
+
+# def _get_current_emulation_state(rz_instance, start_time, step):
+#     """
+#     获取当前寄存器状态、PC、指令信息和 RzIL 表示。
+#     """
+#     # 7. 获取当前寄存器状态
+#     current_regs = {}
+#     try:
+#         regs_json = rz_instance.cmd("aezvj")  # 使用 JSON 格式获取 VM 寄存器
+#         if not regs_json.strip():
+#             # 如果 aezvj 不工作，尝试标准的寄存器命令
+#             regs_json = rz_instance.cmd("drj")
+#         current_regs = json.loads(regs_json) if regs_json.strip() else {}
+#     except json.JSONDecodeError:
+#         current_regs = {}
+
+#     # 8. 获取当前PC
+#     current_pc = None
+#     pc_candidates = ["rip", "pc", "eip", "ip", "PC"]
+#     for pc_reg in pc_candidates:
+#         if pc_reg in current_regs:
+#             current_pc = current_regs[pc_reg]
+#             break
+
+#     if current_pc is None:
+#         print("Cannot determine current PC, stopping execution")
+#         return None, None, None, None, None
+
+#     # 9. 获取当前指令信息
+#     current_op = {}
+#     try:
+#         disasm_json = rz_instance.cmd(f"pdj 1 @ {current_pc}")
+#         if disasm_json.strip():
+#             current_op = json.loads(disasm_json)[0]
+#         else:
+#             current_op = {}
+#     except (json.JSONDecodeError, IndexError):
+#         current_op = {}
+
+#     # 10. 获取RzIL表示（如果可用）
+#     rzil_repr = ""
+#     try:
+#         rzil_repr = rz_instance.cmd(f"aoip 1 @ {current_pc}")
+#     except:
+#         rzil_repr = "N/A"
+
+#     # 11. 记录当前状态
+#     step_info = {
+#         "step": step,
+#         "pc": hex(current_pc) if isinstance(current_pc, int) else str(current_pc),
+#         "op": current_op.get("disasm", ""),
+#         "opcode": current_op.get("opcode", ""),
+#         "type": current_op.get("type", ""),
+#         "rzil": rzil_repr.strip(),
+#         "regs": current_regs,
+#         "timestamp": time.time() - start_time
+#     }
+#     return step_info, current_pc, current_op, current_regs, rzil_repr
+
+# def _check_emulation_termination(step_info, step_output, timeout_seconds, start_time, trace):
+#     """
+#     检查模拟是否应该终止（超时、返回指令、执行错误、无限循环）。
+#     返回 True 表示应该终止，False 表示继续。
+#     """
+#     # 超时检查
+#     if time.time() - start_time > timeout_seconds:
+#         print(f"Execution timed out after {timeout_seconds} seconds")
+#         return True
+
+#     # 检查是否到达函数结尾
+#     op_type = step_info.get("type", "")
+#     if op_type in ["ret", "retn", "retf", "return"]:
+#         print(f"Reached return instruction at step {step_info['step']}")
+#         return True
+
+#     # 检查是否有执行错误
+#     if step_output and any(keyword in str(step_output).lower() for keyword in ["error", "invalid", "failed"]):
+#         print(f"Execution error at step {step_info['step']}: {step_output}")
+#         return True
+
+#     # 简单的无限循环检测
+#     if step_info['step'] > 0 and len(trace) >= 2:
+#         prev_pc = trace[-2]["pc"]
+#         if prev_pc == step_info["pc"] and op_type not in ["nop", "call"]:
+#             print(f"Possible infinite loop detected at step {step_info['step']}")
+#             return True
+#     return False
+
+# def _emulate_function_target_rzil(rz_instance, function_name, max_steps, result_queue, timeout_seconds=30):
+#     """
+#     修正后的 RzIL 模拟函数，移除了不存在的命令并优化了内存处理。
+
+#     NOTE: This is the legacy function - use emulate_function() for the improved version.
+
+#     Args:
+#         rz_instance: 活跃的 rzpipe 实例。
+#         function_name: 要模拟的函数名称。
+#         max_steps: 最大执行步数。
+#         result_queue: 用于放置模拟结果的队列。
+#         timeout_seconds: 超时时间（秒）。
+#     """
+#     start_time = time.time()
+#     original_offset = None
+#     trace = []
+#     vm_changes = []
+
+#     try:
+#         # 1. 保存当前偏移量并跳转到函数
+#         original_offset = rz_instance.cmd("s").strip()
+#         rz_instance.cmd(f"s {function_name}")
+
+#         # 2. 获取二进制信息
+#         binary_info = rz_instance.cmdj("ij")
+#         if not binary_info:
+#             result_queue.put({
+#                 "error": "Failed to get binary information",
+#                 "success": False
+#             })
+#             return
+
+#         # 3. 初始化 RzIL VM
+#         if not _initialize_rzil_vm(rz_instance, result_queue):
+#             return
+
+#         # 4. 设置基本的寄存器初始值
+#         arch, bits, stack_pointer, base_pointer, aligned_sp = _get_arch_specific_registers(binary_info)
+#         _set_initial_registers(rz_instance, stack_pointer, base_pointer, aligned_sp)
+
+#         # 6. 开始执行循环
+#         for step in range(max_steps):
+#             step_info, current_pc, current_op, current_regs, rzil_repr = _get_current_emulation_state(rz_instance, start_time, step)
+
+#             if current_pc is None:
+#                 # Cannot determine current PC, stopping execution (handled in _get_current_emulation_state)
+#                 break
+
+#             trace.append(step_info)
+
+#             # 12. 执行一步并记录状态变化
+#             try:
+#                 step_output = rz_instance.cmd("aezsej 1")
+#                 if step_output.strip():
+#                     try:
+#                         step_output_parsed = json.loads(step_output)
+#                     except json.JSONDecodeError:
+#                         step_output_parsed = step_output
+#                 else:
+#                     step_output_parsed = None
+#             except Exception as e:
+#                 print(f"执行错误: {e}")
+#                 break
+
+#             # 记录VM状态变化
+#             if step_output_parsed:
+#                 vm_changes.append({
+#                     "step": step,
+#                     "changes": step_output_parsed,
+#                     "timestamp": time.time() - start_time
+#                 })
+
+#             # 检查是否应该终止模拟
+#             if _check_emulation_termination(step_info, step_output, timeout_seconds, start_time, trace):
+#                 break
+
+#         # 16. 获取最终状态
+#         final_regs = {}
+#         try:
+#             final_regs_json = rz_instance.cmd("aezvj")
+#             if not final_regs_json.strip():
+#                 final_regs_json = rz_instance.cmd("arj")
+#             final_regs = json.loads(final_regs_json) if final_regs_json.strip() else {}
+#         except json.JSONDecodeError:
+#             final_regs = {}
+
+#         result_queue.put({
+#             "success": True,
+#             "final_regs": final_regs,
+#             "trace": trace,
+#             "vm_changes": vm_changes,
+#             "steps_executed": len(trace),
+#             "execution_time": time.time() - start_time,
+#             "emulation_type": "RzIL_Legacy",
+#             "memory_setup": {
+#                 "architecture": arch,
+#                 "bits": bits,
+#                 "stack_pointer": stack_pointer,
+#                 "initial_sp": hex(aligned_sp)
+#             }
+#         })
+
+#     except Exception as e:
+#         result_queue.put({
+#             "error": str(e),
+#             "success": False,
+#             "execution_time": time.time() - start_time,
+#             "partial_trace": trace if 'trace' in locals() else []
+#         })
+#     finally:
+#         # 清理：恢复到原始偏移量
+#         if original_offset:
+#             try:
+#                 rz_instance.cmd(f"s {original_offset}")
+#             except:
+#                 pass
+
+# def setup_realistic_memory_layout(rz_instance):
+#     """
+#     设置更真实的内存布局，包括代码段、数据段和栈段
+
+#     NOTE: This function uses non-existent commands and is kept for legacy compatibility only.
+#     Use _setup_memory_with_malloc() instead.
+#     """
+#     print("WARNING: setup_realistic_memory_layout() uses non-existent 'aezm' command")
+#     print("Please use the updated emulate_function() which uses malloc:// protocol")
+#     return False
+
+# def emulate_function_with_timeout(rz_instance, function_name, max_steps=1000, timeout=30):
+#     """
+#     带超时的函数模拟包装器
+
+#     NOTE: This is a legacy function. Use emulate_function() for the improved version.
+
+#     Args:
+#         rz_instance: rzpipe实例
+#         function_name: 函数名
+#         max_steps: 最大步数
+#         timeout: 超时时间（秒）
+
+#     Returns:
+#         dict: 模拟结果
+#     """
+#     result_queue = queue.Queue()
+
+#     # 启动模拟线程
+#     emulation_thread = threading.Thread(
+#         target=_emulate_function_target_rzil,
+#         args=(rz_instance, function_name, max_steps, result_queue, timeout)
+#     )
+
+#     emulation_thread.daemon = True
+#     emulation_thread.start()
+
+#     try:
+#         # 等待结果或超时
+#         result = result_queue.get(timeout=timeout + 5)  # 给一些缓冲时间
+#         return result
+#     except queue.Empty:
+#         return {
+#             "error": f"Emulation timed out after {timeout} seconds",
+#             "success": False
+#         }
+#     finally:
+#         if emulation_thread.is_alive():
+#             # 线程仍在运行，但我们已经超时了
+#             pass
+
+
+# if __name__ == "__main__":
+#     binary_path = "/Users/yingdong/VSCode/angr/angr_ctf/00_angr_find/00_angr_find_arm"  # Example binary path
+#     function_name = "entry0"  # Example function name
+
+#     print("=" * 60)
+#     print("Rizin Binary Analysis with Improved RzIL Emulation")
+#     print("=" * 60)
+
+#     # Test the improved emulation function
+#     print(f"\n🚀 Testing improved RzIL emulation:")
+#     result = emulate_function(binary_path, function_name, max_steps=100, timeout=3600)
+
+#     print("\n" + "=" * 40)
+#     print("🔍 Emulation Results Analysis")
+#     print("=" * 40)
+
+#     if result.get("success"):
+#         print("✅ Emulation completed successfully!")
+
+#         # Display execution summary
+#         summary = result.get("execution_summary", {})
+#         print(f"📊 Steps executed: {summary.get('steps_executed', 0)}")
+#         print(f"⏱️  Execution time: {summary.get('execution_time', 0):.3f}s")
+#         print(f"🏗️  Memory setup: {'✅' if summary.get('memory_setup_success') else '❌'}")
+#         print(f"🔧 Architecture: {summary.get('architecture', 'unknown')}")
+
+#         # Display execution trace
+#         trace = result.get("execution_trace", [])
+#         if trace:
+#             print(f"\n📋 Execution trace:")
+#             for step_info in trace:
+#                 step_num = step_info.get("step", "?")
+#                 pc = step_info.get("pc", "?")
+#                 instruction = step_info.get("instruction", "?")
+#                 duration = step_info.get("step_duration", 0)
+
+#                 status = "✅"
+#                 if step_info.get("memory_warning"):
+#                     status = "⚠️"
+#                 elif step_info.get("execution_error"):
+#                     status = "❌"
+
+#                 print(f"  {status} Step {step_num}: {pc} - {instruction} ({duration:.3f}s)")
+
+#                 if step_info.get("memory_warning"):
+#                     print(f"    ⚠️  Memory warning: {step_info['memory_warning']}")
+
+#         # Display VM state changes
+#         vm_changes = result.get("vm_state_changes", [])
+#         if vm_changes:
+#             print(f"\n🔄 VM state changes: {len(vm_changes)} changes recorded")
+
+#     else:
+#         print("❌ Emulation failed")
+#         print(f"Error: {result.get('error', 'Unknown error')}")
+
+#         if result.get("setup_log"):
+#             print("\n📋 Setup log:")
+#             for log_entry in result["setup_log"]:
+#                 print(f"  • {log_entry}")
