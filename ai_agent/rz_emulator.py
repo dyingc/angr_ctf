@@ -142,6 +142,277 @@ def _test_memory_access(rz_instance, address):
         print(f"Memory test failed @ {hex(address)}: {e}")
         return False
 
+
+def _merge_multi_step_changes(all_outputs: List[str]) -> str:
+    """
+    合并多步执行的状态变化，只保留初始状态和最终状态
+
+    Args:
+        all_outputs: 每一步的执行输出列表
+
+    Returns:
+        str: 合并后的JSON字符串，包含净变化
+    """
+    initial_states = {}  # 存储初始状态：{变量名: 初始值}
+    final_states = {}    # 存储最终状态：{变量名: 最终值}
+    raw_outputs = []     # 存储非JSON输出
+
+    for step_idx, output in enumerate(all_outputs):
+        if not output or not output.strip():
+            continue
+
+        try:
+            changes = json.loads(output)
+            if not isinstance(changes, list):
+                changes = [changes]
+
+            for change in changes:
+                if not isinstance(change, dict):
+                    continue
+
+                # 解析不同类型的变化
+                change_type = change.get("type", "")
+
+                if change_type == "var_write":
+                    # 寄存器/变量写入：{"type": "var_write", "name": "x0", "old": "0x0", "new": "0x123"}
+                    var_name = change.get("name")
+                    old_value = change.get("old")
+                    new_value = change.get("new")
+
+                    if var_name:
+                        # 如果是第一次见到这个变量，记录初始状态
+                        if var_name not in initial_states:
+                            initial_states[var_name] = old_value
+                        # 总是更新最终状态
+                        final_states[var_name] = new_value
+
+                elif change_type == "pc_write":
+                    # PC写入：{"type": "pc_write", "old": "0x1000", "new": "0x1004"}
+                    old_pc = change.get("old")
+                    new_pc = change.get("new")
+
+                    if "pc" not in initial_states:
+                        initial_states["pc"] = old_pc
+                    final_states["pc"] = new_pc
+
+                elif change_type == "mem_write":
+                    # 内存写入：{"type": "mem_write", "addr": "0x1000", "old": "0x0", "new": "0x123"}
+                    addr = change.get("addr")
+                    old_value = change.get("old")
+                    new_value = change.get("new")
+
+                    if addr:
+                        mem_key = f"mem[{addr}]"
+                        if mem_key not in initial_states:
+                            initial_states[mem_key] = old_value
+                        final_states[mem_key] = new_value
+
+                else:
+                    # 其他类型的变化，直接保留
+                    raw_outputs.append(change)
+
+        except json.JSONDecodeError:
+            # 非JSON输出，作为原始输出保留
+            raw_outputs.append({"type": "raw_output", "content": output.strip()})
+
+    # 构建最终的变化列表：只包含真正发生变化的项
+    net_changes = []
+
+    # 处理变量/寄存器变化
+    for var_name in final_states:
+        initial_value = initial_states.get(var_name)
+        final_value = final_states[var_name]
+
+        # 只记录真正发生变化的项
+        if initial_value != final_value:
+            if var_name == "pc":
+                net_changes.append({
+                    "type": "pc_write",
+                    "old": initial_value,
+                    "new": final_value
+                })
+            elif var_name.startswith("mem["):
+                addr = var_name[4:-1]  # 提取地址，去掉 "mem[" 和 "]"
+                net_changes.append({
+                    "type": "mem_write",
+                    "addr": addr,
+                    "old": initial_value,
+                    "new": final_value
+                })
+            else:
+                net_changes.append({
+                    "type": "var_write",
+                    "name": var_name,
+                    "old": initial_value,
+                    "new": final_value
+                })
+
+    # 添加原始输出
+    net_changes.extend(raw_outputs)
+
+    return json.dumps(net_changes) if net_changes else ""
+
+def _is_call_instruction(instruction_type: str, instruction_disasm: str) -> bool:
+    """
+    判断指令是否为函数调用指令
+
+    Args:
+        instruction_type: 指令类型
+        instruction_disasm: 指令反汇编文本
+
+    Returns:
+        bool: 如果是调用指令返回True，否则返回False
+    """
+    # 检查指令类型
+    call_types = ["call", "ucall", "icall"]
+    if instruction_type.lower() in call_types:
+        return True
+
+    # 检查指令助记符（针对不同架构）
+    call_mnemonics = [
+        "call", "bl", "blr", "blx",  # x86, ARM64, ARM32
+        "jal", "jalr",               # RISC-V, MIPS
+        "bsr",                       # m68k
+        "callf", "calln"             # 其他变体
+    ]
+
+    disasm_lower = instruction_disasm.lower()
+    for mnemonic in call_mnemonics:
+        if disasm_lower.startswith(mnemonic + " ") or disasm_lower == mnemonic:
+            return True
+
+    return False
+
+def rzil_step_over(rz_instance, num_steps: int = 1) -> str:
+    """
+    实现 RzIL 的 step over 功能，支持指定步数。
+
+    Step over 的逻辑：
+    1. 判断当前指令是否为 call 指令
+    2. 如果是 call：使用 pdj 获取下一条指令地址，然后用 aezsue 跳过调用
+    3. 如果不是 call：使用 aezsej 正常单步执行
+    4. 重复执行指定的步数
+
+    注意：只有对 call 指令才能安全使用 pdj 获取下一条指令地址，
+    因为其他指令（如跳转、分支）可能会离开当前基本块。
+
+    Args:
+        rz_instance: rzpipe 实例
+        num_steps: 要执行的步数，默认为1
+
+    Returns:
+        str: 执行输出（模拟 aezsej 的返回格式）
+    """
+    all_outputs = []
+
+    for step_idx in range(num_steps):
+        print(f"\n=== Step Over {step_idx + 1}/{num_steps} ===")
+
+        # 获取当前PC
+        try:
+            pc_output = rz_instance.cmd("aezvj PC")
+            pc_data = json.loads(pc_output)
+            current_pc = pc_data.get("PC", "0x0")
+            if current_pc == '0x00000001000005d0':
+                print("📍 Eric says: Reached target PC - triggering special behavior...")
+        except Exception as e:
+            print(f"Failed to get current PC: {e}")
+            return ""
+
+        print(f"Current PC: {current_pc}")
+
+        # 获取当前指令信息
+        try:
+            disasm_output = rz_instance.cmd(f"pdj 1 @ {current_pc}")
+            if disasm_output.strip():
+                instructions = json.loads(disasm_output)
+                if not instructions:
+                    print(f"No instruction found at {current_pc}")
+                    return ""
+                current_op = instructions[0]
+            else:
+                print(f"No instruction found at {current_pc}")
+                return ""
+        except Exception as e:
+            print(f"Failed to get instruction at {current_pc}: {e}")
+            return ""
+
+        instruction_type = current_op.get("type", "")
+        instruction_disasm = current_op.get("disasm", "")
+
+        print(f"Instruction: {instruction_disasm}")
+        print(f"Type: {instruction_type}")
+
+        # 判断是否为函数调用指令
+        is_call_instruction = instruction_type == 'call' # _is_call_instruction(instruction_type, instruction_disasm)
+
+        if is_call_instruction:
+            print("📞 Detected call instruction - stepping over...")
+
+            # 对于 call 指令，获取下一条指令地址并跳过
+            try:
+                # 获取当前和下一条指令
+                disasm_output = rz_instance.cmd(f"pdj 2 @ {current_pc}")
+                if disasm_output.strip():
+                    instructions = json.loads(disasm_output)
+                    if len(instructions) < 2:
+                        print(f"Cannot get next instruction after call at {current_pc}")
+                        return ""
+                    next_op = instructions[1]
+                    next_pc = hex(next_op.get("offset", 0))
+                else:
+                    print(f"Cannot get instructions at {current_pc}")
+                    return ""
+
+                print(f"Stepping over call to: {next_pc}")
+
+                # 使用 aezsue 执行到下一条指令
+                exec_output = rz_instance.cmd(f"aezsue {next_pc}")
+                print(f"Step over execution output: {exec_output}")
+
+                # 验证是否成功到达目标地址
+                verify_pc_output = rz_instance.cmd("aezvj PC")
+                verify_pc_data = json.loads(verify_pc_output)
+                actual_pc = verify_pc_data.get("PC", "0x0")
+
+                if actual_pc.lower() != next_pc.lower():
+                    print(f"⚠️  PC mismatch: expected {next_pc}, got {actual_pc}")
+                else:
+                    print(f"✅ Successfully stepped over call to {next_pc}")
+
+                all_outputs.append(exec_output)
+
+            except Exception as e:
+                print(f"❌ Failed to step over call: {e}")
+                return ""
+        else:
+            print("👣 Regular instruction - single stepping...")
+
+            # 对于非调用指令，使用正常单步执行
+            try:
+                exec_output = rz_instance.cmd("aezsej 1")
+                print(f"Single step execution output: {exec_output}")
+
+                # 获取执行后的PC用于验证
+                after_pc_output = rz_instance.cmd("aezvj PC")
+                after_pc_data = json.loads(after_pc_output)
+                actual_pc = after_pc_data.get("PC", "0x0")
+
+                print(f"✅ Single stepped from {current_pc} to {actual_pc}")
+
+                all_outputs.append(exec_output)
+
+            except Exception as e:
+                print(f"❌ Failed to single step: {e}")
+                return ""
+
+    # 合并所有输出（如果有多步的话）
+    if len(all_outputs) == 1:
+        return all_outputs[0]
+    else:
+        # 对于多步执行，合并状态变化：只保留初始状态和最终状态
+        return _merge_multi_step_changes(all_outputs)
+
 def _execute_emulation_loop(
     rz_instance: rzpipe.open,
     max_steps: int,
@@ -234,11 +505,11 @@ def _execute_emulation_loop(
         # 执行一步
         try:
             # 尝试带JSON输出的执行
-            exec_output = rz_instance.cmd("aezsej 1")
+            exec_output = rzil_step_over(rz_instance, 1).strip() # `aezsej 1` 是 step into
             print(f"Execution output: {exec_output}")
 
             vm_changes_data = []
-            if exec_output.strip():
+            if exec_output:
                 try:
                     vm_changes_data = json.loads(exec_output)
                 except json.JSONDecodeError:
@@ -304,7 +575,6 @@ def _execute_emulation_loop(
         "vm_state_changes": vm_changes,
         "final_registers": final_regs
     }
-
 
 def _improved_rzil_emulation(
     rz_instance,
