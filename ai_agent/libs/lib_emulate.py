@@ -26,21 +26,21 @@ def _simulate_external_call_effects(rz_instance, instruction_disasm: str, curren
     # 获取当前指令的下一条指令地址（用于PC调整）
     current_offset = current_op.get("offset", 0)
     instruction_size = current_op.get("size", 4)  # 默认4字节指令长度
-    next_pc = current_offset + instruction_size
+    next_pc = hex(current_offset + instruction_size)
 
     print(f"🎭 Simulating external call: {instruction_disasm}")
     print(f"🏗️ Architecture: {arch} {bits}-bit")
-    print(f"📍 Current PC: {hex(current_offset)} -> Next PC: {hex(next_pc)}")
+    print(f"📍 Current PC: {hex(current_offset)} -> Next PC: {next_pc}")
 
     try:
         # 1. 首先调整PC到下一条指令
-        old_pc = int(_get_current_pc_value(rz_instance, arch_info["pc_register"]), 16)
-        rz_instance.cmd(f"aezv {arch_info['pc_register']} {hex(next_pc)}")
+        old_pc = _get_current_pc_value(rz_instance, arch_info["pc_register"])
+        rz_instance.cmd(f"aezv {arch_info['pc_register']} {next_pc}")
 
         changes.append({
             "type": "pc_write",
-            "old": hex(old_pc),
-            "new": hex(next_pc)
+            "old": old_pc,
+            "new": next_pc
         })
 
         # 2. 模拟特定外部函数的效果
@@ -194,8 +194,8 @@ def _get_current_pc_value(rz_instance, pc_register: str) -> str:
         current_pc_output = rz_instance.cmd(f"aezv {pc_register}")
         # 解析输出，格式通常是 "pc: 0x1234abcd"
         if ":" in current_pc_output:
-            return current_pc_output.split(":")[1].strip()
-        return current_pc_output.strip()
+            return hex(int(current_pc_output.split(":")[1].strip(), 16))
+        return hex(int(current_pc_output.strip(), 16))
     except Exception:
         return "0x0"
 
@@ -211,13 +211,13 @@ def _simulate_specific_function_effects(rz_instance, disasm_lower: str, arch_inf
         if any(func in disasm_lower for func in ["printf", "sprintf", "fprintf", "snprintf", "vprintf"]):
             print("🖨️ Simulating printf-family function effects...")
             # printf 通常返回打印的字符数
-            old_ret_value = int(_get_current_pc_value(rz_instance, return_reg), 16)
+            old_ret_value = _get_current_pc_value(rz_instance, return_reg)
             rz_instance.cmd(f"aezv {return_reg} 0x10")  # 假设打印了16个字符
 
             changes.append({
                 "type": "var_write",
                 "name": return_reg,
-                "old": hex(old_ret_value),
+                "old": old_ret_value,
                 "new": "0x10"
             })
 

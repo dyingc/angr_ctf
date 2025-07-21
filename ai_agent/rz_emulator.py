@@ -361,30 +361,30 @@ def rzil_step_over(rz_instance, num_steps: int = 1) -> str:
                         print(f"Cannot get next instruction after call at {current_pc}")
                         return ""
                     next_op = instructions[1]
-                    next_pc = hex(next_op.get("offset", 0))
+                    next_pc = next_op.get("offset", 0)
                 else:
                     print(f"Cannot get instructions at {current_pc}")
                     return ""
 
-                print(f"Stepping over call to: {next_pc}")
+                print(f"Stepping over call to: {hex(next_pc)}")
 
                 # 执行到下一条指令
                 if _is_external_function_call(current_op, instruction_disasm):
                     print("Simulating external call effects...")
                     exec_output = _simulate_external_call_effects(rz_instance, instruction_disasm, current_op, arch, bits)
                 else:
-                    exec_output = rz_instance.cmd(f"aezsue {next_pc}")
+                    exec_output = rz_instance.cmd(f"aezsue hex(next_pc)")
                 print(f"Step over execution output: {exec_output}")
 
                 # 验证是否成功到达目标地址
                 verify_pc_output = rz_instance.cmd("aezvj PC")
                 verify_pc_data = json.loads(verify_pc_output)
-                actual_pc = verify_pc_data.get("PC", "0x0")
+                actual_pc = int(verify_pc_data.get("PC", "0x0"), 16)
 
-                if actual_pc.lower() != next_pc.lower():
-                    print(f"⚠️  PC mismatch: expected {next_pc}, got {actual_pc}")
+                if actual_pc != next_pc:
+                    print(f"⚠️  PC mismatch: expected {hex(next_pc)}, got {hex(actual_pc)}")
                 else:
-                    print(f"✅ Successfully stepped over call to {next_pc}")
+                    print(f"✅ Successfully stepped over call to {hex(next_pc)}")
 
                 all_outputs.append(exec_output)
 
@@ -859,7 +859,7 @@ def enhanced_emulate_function_example():
     result = emulate_function(
         binary_path=binary_path,
         function_name=function_name,
-        max_steps=100,
+        max_steps=20,
         timeout=60,
         stack_bytes=64,           # 读取64字节的栈快照
         stack_size=0x20000,       # 128KB栈大小
