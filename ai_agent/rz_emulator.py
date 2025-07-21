@@ -7,9 +7,7 @@ All operations are designed to be thread-safe.
 """
 import rzpipe
 import json
-from typing import Dict, Any, List, Optional
-import re
-import concurrent.futures
+from typing import Dict, Any, List, Optional, Tuple
 import threading
 import queue
 import time
@@ -40,7 +38,7 @@ def _check_rzil_support(rz_instance):
     try:
         # 检查架构列表中是否有 'I' 标记（表示支持 RzIL）
         arch_list = rz_instance.cmd("La")
-        print(f"Architecture support list:\n{arch_list}")
+        # print(f"Architecture support list:\n{arch_list}")
 
         # 检查当前架构
         arch_info = rz_instance.cmdj("ij")
@@ -52,7 +50,15 @@ def _check_rzil_support(rz_instance):
         print(f"Error checking RzIL support: {e}")
         return False
 
-def _setup_memory_with_malloc(rz_instance, arch, bits):
+def _setup_memory_with_malloc(
+    rz_instance,
+    arch,
+    bits,
+    stack_size: int, # 移除默认值，由调用者提供
+    stack_base: int, # 移除默认值，由调用者提供
+    data_size: int, # 移除默认值，由调用者提供
+    data_base: int # 移除默认值，由调用者提供
+) -> Tuple[str, str, int, bool]:
     """
     使用您验证过的 malloc:// 方法设置内存
     """
@@ -64,22 +70,20 @@ def _setup_memory_with_malloc(rz_instance, arch, bits):
         current_files = rz_instance.cmd("ol")
         print(current_files)
 
-        # 2. 创建栈内存区域 - 使用您验证过的格式
-        stack_size = 0x10000  # 64KB 栈（比较保守的大小）
-        stack_base = 0x70000000  # 使用一个安全的基地址
+        # 2. 创建栈内存区域
+        # 64KB 栈（比较保守的大小）(stack_size = 0x10000)
+        # 使用一个安全的基地址 (stack_base = 0x70000000)
 
-        # 使用您验证过的命令格式: o malloc://size address
+        # 使用: o malloc://size address
         stack_cmd = f"o malloc://{hex(stack_size)} {hex(stack_base)}"
         print(f"Executing stack mapping command: {stack_cmd}")
-        stack_result = rz_instance.cmd(stack_cmd)
+        stack_result = rz_instance.cmd(stack_cmd) or "Stack mapping command succeeded"
         print(f"Stack mapping result: {stack_result}")
 
         # 3. 创建额外的数据内存区域
-        data_size = 0x1000  # 4KB 数据区域
-        data_base = 0x60000000
         data_cmd = f"o malloc://{hex(data_size)} {hex(data_base)}"
         print(f"Executing data mapping command: {data_cmd}")
-        data_result = rz_instance.cmd(data_cmd)
+        data_result = rz_instance.cmd(data_cmd) or "Data mapping command succeeded"
         print(f"Data mapping result: {data_result}")
 
         # 4. 验证映射状态
@@ -138,20 +142,193 @@ def _test_memory_access(rz_instance, address):
         print(f"Memory test failed @ {hex(address)}: {e}")
         return False
 
-def _improved_rzil_emulation(rz_instance, function_name, max_steps, result_queue, timeout_seconds=30):
+def _execute_emulation_loop(
+    rz_instance: rzpipe.open,
+    max_steps: int,
+    timeout_seconds: int,
+    start_time: float,
+    stack_bytes: int = 32, # 新增参数，用于指定栈快照的字节数
+) -> Dict[str, Any]:
+    """
+    执行 RzIL 模拟的主循环，记录执行轨迹和 VM 状态变化。
+
+    Args:
+        rz_instance: 活跃的 rzpipe 实例。
+        max_steps: 最大执行步数。
+        timeout_seconds: 模拟超时时间（秒）。
+        start_time: 模拟开始的时间戳，用于计算相对时间。
+
+    Returns:
+        一个字典，包含 'execution_trace' (执行轨迹), 'vm_state_changes' (VM 状态变化),
+        和 'final_registers' (最终寄存器状态)。
+    """
+    trace: List[Dict[str, Any]] = []
+    vm_changes: List[Dict[str, Any]] = []
+
+    print("Starting RzIL execution loop...")
+
+    for step in range(max_steps):
+        step_start_time = time.time()
+        print(f"\n=== Step {step} ===")
+
+        # 获取当前寄存器状态
+        try:
+            regs_output = rz_instance.cmd("aezvj")
+            current_regs = json.loads(regs_output) if regs_output.strip() else {}
+        except Exception as e:
+            print(f"Failed to get registers: {e}")
+            current_regs = {}
+
+        # 获取当前PC
+        current_pc = None
+        pc_candidates = ["rip", "pc", "eip", "ip", "PC"]
+        for pc_reg in pc_candidates:
+            if pc_reg in current_regs:
+                current_pc = current_regs[pc_reg]
+                break
+
+        if current_pc is None:
+            print("Cannot determine current PC")
+            break
+
+        # 获取当前指令
+        try:
+            disasm_output = rz_instance.cmd(f"pdj 1 @ {current_pc}")
+            current_op = json.loads(disasm_output)[0] if disasm_output.strip() else {}
+        except Exception as e:
+            print(f"Failed to get instruction: {e}")
+            current_op = {}
+
+        # 记录步骤信息
+        step_info = {
+            "step": step,
+            "pc": hex(current_pc) if isinstance(current_pc, int) else str(current_pc),
+            "instruction": current_op.get("disasm", "unknown"),
+            "opcode": current_op.get("opcode", ""),
+            "type": current_op.get("type", ""),
+            "registers": current_regs,
+            "timestamp": time.time() - start_time,
+            "step_duration": 0  # 将在步骤结束时更新
+        }
+
+        print(f"PC: {step_info['pc']}, Instruction: {step_info['instruction']}")
+        if step_info['instruction'] == 'unknown':
+            print("Eric says: debugging")
+            pass
+
+        # 获取执行前栈快照
+        stack_before_hexdump = None
+        sp_value = None
+        sp_candidates = ["rsp", "esp", "sp"] # 按照优先级顺序
+        for sp_reg in sp_candidates:
+            if sp_reg in current_regs:
+                sp_value = current_regs[sp_reg]
+                break
+
+        if sp_value is not None and isinstance(sp_value, str) and sp_value.startswith("0x"):
+            try:
+                stack_before_hexdump = rz_instance.cmd(f"pxwj {stack_bytes} @ {sp_value}").strip()
+            except Exception as e:
+                print(f"Error reading stack before execution: {e}")
+
+        # 执行一步
+        try:
+            # 尝试带JSON输出的执行
+            exec_output = rz_instance.cmd("aezsej 1")
+            print(f"Execution output: {exec_output}")
+
+            vm_changes_data = []
+            if exec_output.strip():
+                try:
+                    vm_changes_data = json.loads(exec_output)
+                except json.JSONDecodeError:
+                    # 非JSON格式，直接记录为字符串
+                    vm_changes_data = [{"type": "raw_exec_output", "content": exec_output}]
+
+            # 获取执行后栈快照
+            stack_after_hexdump = None
+            if sp_value is not None and isinstance(sp_value, str) and sp_value.startswith("0x"):
+                try:
+                    stack_after_hexdump = rz_instance.cmd(f"pxwj {stack_bytes} @ {sp_value}").strip()
+                except Exception as e:
+                    print(f"Error reading stack after execution: {e}")
+
+            # 对比栈快照，如果发生变化则添加到 vm_changes_data
+            if stack_before_hexdump is not None and stack_after_hexdump is not None and stack_before_hexdump != stack_after_hexdump:
+                vm_changes_data.append({
+                    "type": "stack",
+                    "old": stack_before_hexdump,
+                    "new": stack_after_hexdump
+                })
+            elif stack_before_hexdump is None or stack_after_hexdump is None:
+                # 如果任一快照获取失败，但之前没有记录错误，则记录
+                if "stack_read_error" not in step_info:
+                    step_info["stack_read_error"] = "Could not read stack before or after execution"
+
+            if vm_changes_data:
+                vm_changes.append({
+                    "step": step,
+                    "changes": vm_changes_data,
+                    "timestamp": time.time() - start_time
+                })
+
+        except Exception as e:
+            print(f"Execution of step {step} failed: {e}")
+            step_info["execution_error"] = str(e)
+            # 可以选择是否继续
+
+        # 更新步骤持续时间
+        step_info["step_duration"] = time.time() - step_start_time
+        trace.append(step_info)
+
+        # 检查超时
+        if time.time() - start_time > timeout_seconds:
+            print(f"⏰ Execution timeout ({timeout_seconds}s)")
+            break
+
+        # 检查是否到达返回指令
+        if step_info.get("type") in ["ret", "retn", "retf", "return"]:
+            print(f"🔚 Reached return instruction")
+            break
+
+    # 获取最终状态
+    try:
+        final_regs_output = rz_instance.cmd("aezvj")
+        final_regs = json.loads(final_regs_output) if final_regs_output.strip() else {}
+    except Exception as e:
+        print(f"Failed to get final registers: {e}")
+        final_regs = {}
+
+    return {
+        "execution_trace": trace,
+        "vm_state_changes": vm_changes,
+        "final_registers": final_regs
+    }
+
+
+def _improved_rzil_emulation(
+    rz_instance,
+    function_name,
+    max_steps,
+    result_queue,
+    timeout_seconds=30,
+    stack_bytes: int = 32, # 新增参数
+    stack_size: int = 0x10000, # 新增参数
+    stack_base: int = 0x70000000, # 新增参数
+    data_size: int = 0x1000, # 新增参数
+    data_base: int = 0x60000000 # 新增参数
+):
     """
     基于实际环境的改进版 RzIL 模拟
     """
     start_time = time.time()
     original_offset = None
-    trace = []
-    vm_changes = []
-    setup_log = []
+    setup_log: List[str] = [] # 明确类型注解
 
     try:
         # 1. 保存原始状态并导航到函数
         original_offset = rz_instance.cmd("s").strip()
-        seek_result = rz_instance.cmd(f"s {function_name}")
+        seek_result = rz_instance.cmd(f"s {function_name}") or rz_instance.cmd("s").strip() + " (Done)"
         setup_log.append(f"Navigate to function {function_name}: {seek_result}")
 
         # 2. 获取架构信息
@@ -171,7 +348,7 @@ def _improved_rzil_emulation(rz_instance, function_name, max_steps, result_queue
 
         # 4. 初始化 RzIL VM
         print("Initializing RzIL VM...")
-        init_result = rz_instance.cmd("aezi")
+        init_result = rz_instance.cmd("aezi") or "Initialization command Succeeded"
         setup_log.append(f"RzIL VM initialization: {init_result}")
 
         if "error" in init_result.lower():
@@ -184,7 +361,7 @@ def _improved_rzil_emulation(rz_instance, function_name, max_steps, result_queue
 
         # 5. 设置内存映射
         stack_pointer, base_pointer, initial_sp, memory_success = _setup_memory_with_malloc(
-            rz_instance, arch, bits
+            rz_instance, arch, bits, stack_size, stack_base, data_size, data_base # 传递参数
         )
         setup_log.append(f"Memory mapping setup: {'success' if memory_success else 'failed'}")
 
@@ -192,8 +369,8 @@ def _improved_rzil_emulation(rz_instance, function_name, max_steps, result_queue
         print(f"Setting registers: {stack_pointer} = {hex(initial_sp)}")
         sp_result = rz_instance.cmd(f"aezv {stack_pointer} {hex(initial_sp)}")
         bp_result = rz_instance.cmd(f"aezv {base_pointer} {hex(initial_sp)}")
-        setup_log.append(f"Stack pointer setup: {sp_result}")
-        setup_log.append(f"Base pointer setup: {bp_result}")
+        setup_log.append(f"Stack pointer setup: {sp_result.strip()}")
+        setup_log.append(f"Base pointer setup: {bp_result.strip()}")
 
         # 7. 验证寄存器设置
         sp_verify = rz_instance.cmd(f"aezv {stack_pointer}")
@@ -204,112 +381,15 @@ def _improved_rzil_emulation(rz_instance, function_name, max_steps, result_queue
             memory_test = _test_memory_access(rz_instance, initial_sp)
             setup_log.append(f"Memory access test: {'passed' if memory_test else 'failed'}")
 
-        # 9. 开始执行循环
-        print("Starting RzIL execution...")
-        setup_log.append("Starting execution loop")
+        # 9. 执行模拟循环
+        emulation_results = _execute_emulation_loop(
+            rz_instance, max_steps, timeout_seconds, start_time, stack_bytes # 传递 stack_bytes
+        )
+        trace = emulation_results["execution_trace"]
+        vm_changes = emulation_results["vm_state_changes"]
+        final_regs = emulation_results["final_registers"]
 
-        for step in range(max_steps):
-            step_start_time = time.time()
-            print(f"\n=== Step {step} ===")
-
-            # 获取当前寄存器状态
-            try:
-                regs_output = rz_instance.cmd("aezvj")
-                current_regs = json.loads(regs_output) if regs_output.strip() else {}
-            except Exception as e:
-                print(f"Failed to get registers: {e}")
-                current_regs = {}
-
-            # 获取当前PC
-            current_pc = None
-            pc_candidates = ["rip", "pc", "eip", "ip", "PC"]
-            for pc_reg in pc_candidates:
-                if pc_reg in current_regs:
-                    current_pc = current_regs[pc_reg]
-                    break
-
-            if current_pc is None:
-                print("Cannot determine current PC")
-                break
-
-            # 获取当前指令
-            try:
-                disasm_output = rz_instance.cmd(f"pdj 1 @ {current_pc}")
-                current_op = json.loads(disasm_output)[0] if disasm_output.strip() else {}
-            except Exception as e:
-                print(f"Failed to get instruction: {e}")
-                current_op = {}
-
-            # 记录步骤信息
-            step_info = {
-                "step": step,
-                "pc": hex(current_pc) if isinstance(current_pc, int) else str(current_pc),
-                "instruction": current_op.get("disasm", "unknown"),
-                "opcode": current_op.get("opcode", ""),
-                "type": current_op.get("type", ""),
-                "registers": current_regs,
-                "timestamp": time.time() - start_time,
-                "step_duration": 0  # 将在步骤结束时更新
-            }
-
-            print(f"PC: {step_info['pc']}, Instruction: {step_info['instruction']}")
-
-            # 执行一步
-            try:
-                # 尝试带JSON输出的执行
-                exec_output = rz_instance.cmd("aezsej 1")
-                print(f"Execution output: {exec_output}")
-
-                if exec_output.strip():
-                    try:
-                        vm_changes_data = json.loads(exec_output)
-                        vm_changes.append({
-                            "step": step,
-                            "changes": vm_changes_data,
-                            "timestamp": time.time() - start_time
-                        })
-                    except json.JSONDecodeError:
-                        # 非JSON格式，直接记录
-                        vm_changes.append({
-                            "step": step,
-                            "changes": exec_output,
-                            "timestamp": time.time() - start_time
-                        })
-
-                # 检查是否有 StoreW 错误
-                if "storew" in exec_output.lower() and ("failed" in exec_output.lower() or "error" in exec_output.lower()):
-                    print(f"⚠️  Memory write warning: {exec_output}")
-                    # 记录警告但继续执行
-                    step_info["memory_warning"] = exec_output
-
-            except Exception as e:
-                print(f"Execution of step {step} failed: {e}")
-                step_info["execution_error"] = str(e)
-                # 可以选择是否继续
-
-            # 更新步骤持续时间
-            step_info["step_duration"] = time.time() - step_start_time
-            trace.append(step_info)
-
-            # 检查超时
-            if time.time() - start_time > timeout_seconds:
-                print(f"⏰ Execution timeout ({timeout_seconds}s)")
-                break
-
-            # 检查是否到达返回指令
-            if step_info.get("type") in ["ret", "retn", "retf", "return"]:
-                print(f"🔚 Reached return instruction")
-                break
-
-        # 10. 获取最终状态
-        try:
-            final_regs_output = rz_instance.cmd("aezvj")
-            final_regs = json.loads(final_regs_output) if final_regs_output.strip() else {}
-        except Exception as e:
-            print(f"Failed to get final registers: {e}")
-            final_regs = {}
-
-        # 11. 返回结果
+        # 10. 返回结果
         result_queue.put({
             "success": True,
             "execution_summary": {
@@ -326,11 +406,13 @@ def _improved_rzil_emulation(rz_instance, function_name, max_steps, result_queue
         })
 
     except Exception as e:
+        # 确保 trace 在异常发生时也可用
+        partial_trace = locals().get('trace', [])
         result_queue.put({
             "error": str(e),
             "success": False,
             "execution_time": time.time() - start_time,
-            "partial_trace": trace,
+            "partial_trace": partial_trace,
             "setup_log": setup_log,
             "memory_setup_attempted": True
         })
@@ -342,7 +424,17 @@ def _improved_rzil_emulation(rz_instance, function_name, max_steps, result_queue
             except:
                 pass
 
-def emulate_function(binary_path: str, function_name: str, max_steps: int = 100, timeout: int = 60) -> Dict[str, Any]:
+def emulate_function(
+    binary_path: str,
+    function_name: str,
+    max_steps: int = 100,
+    timeout: int = 60,
+    stack_bytes: int = 32, # 新增参数
+    stack_size: int = 0x10000, # 新增参数
+    stack_base: int = 0x70000000, # 新增参数
+    data_size: int = 0x1000, # 新增参数
+    data_base: int = 0x60000000 # 新增参数
+) -> Dict[str, Any]:
     """
     Emulates a function using Rizin's RzIL for a number of steps and returns the trace.
 
@@ -372,7 +464,8 @@ def emulate_function(binary_path: str, function_name: str, max_steps: int = 100,
             # 在单独线程中执行模拟
             thread = threading.Thread(
                 target=_improved_rzil_emulation,
-                args=(rz, function_name, max_steps, result_queue, timeout),
+                args=(rz, function_name, max_steps, result_queue, timeout,
+                      stack_bytes, stack_size, stack_base, data_size, data_base), # 传递所有参数
                 daemon=True
             )
 
@@ -724,7 +817,7 @@ if __name__ == "__main__":
 
     # Test the improved emulation function
     print(f"\n🚀 Testing improved RzIL emulation:")
-    result = emulate_function(binary_path, function_name, max_steps=3, timeout=30)
+    result = emulate_function(binary_path, function_name, max_steps=100, timeout=3600)
 
     print("\n" + "=" * 40)
     print("🔍 Emulation Results Analysis")
@@ -774,7 +867,3 @@ if __name__ == "__main__":
             print("\n📋 Setup log:")
             for log_entry in result["setup_log"]:
                 print(f"  • {log_entry}")
-
-    # Display detailed JSON result (commented out to reduce output)
-    # print(f"\n📄 Detailed result (JSON):")
-    # print(json.dumps(result, indent=2, ensure_ascii=False))
