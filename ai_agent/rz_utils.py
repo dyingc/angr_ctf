@@ -12,8 +12,6 @@ from typing import Dict, Any, List, Optional
 import re
 import threading
 
-from .rz_emulator import emulate_function
-
 # Global lock for rzpipe operations to prevent race conditions
 rz_lock = threading.Lock()
 
@@ -265,15 +263,15 @@ def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, m
 
 
 if __name__ == "__main__":
-    binary_path = "/Users/yingdong/VSCode/angr/angr_ctf/00_angr_find/00_angr_find_arm"  # Example binary path
-    function_name = "entry0"  # Example function name
+    binary_path = "~/VSCode/angr/angr_ctf/00_angr_find/00_angr_find"  # Example binary path
+    function_name = "main"  # Example function name
 
     print("=" * 60)
     print("Rizin Binary Analysis with Improved RzIL Emulation")
     print("=" * 60)
 
     # Test search_string_refs
-    query = "Enter the secret password:"
+    query = "Try again."
     print(f"\n🔍 Searching for string references: '{query}'")
     results = search_string_refs(binary_path, query)
     print(f"Search results for '{query}':")
