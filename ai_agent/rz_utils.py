@@ -224,9 +224,13 @@ def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, m
     results = []
     with rz_lock:
         rz = _open_rzpipe(binary_path)
+        # 获取二进制基址
+        bin_info = rz.cmdj("ij")
+        baddr = bin_info.get("bin", {}).get("baddr", 0)
+
         try:
             for s in matched_strings:
-                str_addr = s.get("vaddr")
+                str_addr = s.get("paddr") + baddr if s.get("paddr") else None
                 if str_addr is None:
                     continue
 
@@ -246,14 +250,14 @@ def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, m
                     opcode = code[0].get("opcode", "")
                     refs.append({
                         "caller": f.get("name") if f else "unknown",
-                        "calling_addr": ref.get("from") if ref.get("from") else "unknown",
+                        "calling_addr": hex(ref.get("from")) if ref.get("from") else "unknown",
                         "disasm": disasm or "unknown",
                         "opcode": opcode or "unknown",
                     })
 
                 results.append({
                     "string": s.get("string"),
-                    "str_addr": str_addr,
+                    "str_addr": hex(str_addr) if str_addr else "unknown",
                     "refs": refs[:max_refs]  # Limit to max_refs
                 })
             return results
@@ -263,7 +267,7 @@ def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, m
 
 
 if __name__ == "__main__":
-    binary_path = "~/VSCode/angr/angr_ctf/00_angr_find/00_angr_find"  # Example binary path
+    binary_path = "./00_angr_find/00_angr_find_arm"  # Example binary path
     function_name = "main"  # Example function name
 
     print("=" * 60)
