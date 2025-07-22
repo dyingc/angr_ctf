@@ -131,38 +131,58 @@ for ref_info in refs:
 ### 5. `emulate_function`
 
 **功能说明：**
-使用 Rizin 的 RzIL（Rizin Intermediate Language）对指定函数进行逐指令模拟执行（Emulation），并在每步记录寄存器状态。模拟运行在独立线程中，可设置超时时间。
+使用 Rizin 的 RzIL（Rizin Intermediate Language）对指定函数进行逐指令模拟执行（Emulation），并在每步记录寄存器状态。模拟运行在独立线程中，可设置超时时间。支持对栈和数据段进行自定义内存映射，并能模拟外部函数调用。
 
 **参数：**
 - `binary_path` (str)：二进制文件的绝对路径。
 - `function_name` (str)：需要模拟的函数名。
 - `max_steps` (int)：最多模拟多少条指令。默认 `100`。
 - `timeout` (int)：模拟的最长允许时间（秒）。默认 `60`。
+- `stack_bytes` (int)：每次执行步骤时读取的栈快照字节数。默认 `32`。
+- `stack_size` (int)：为模拟分配的栈内存大小（字节）。默认 `0x10000` (64KB)。
+- `stack_base` (int)：栈内存的基地址。默认 `0x70000000`。
+- `data_size` (int)：为模拟分配的额外数据内存大小（字节）。默认 `0x1000` (4KB)。
+- `data_base` (int)：数据内存的基地址。默认 `0x60000000`。
 
 **返回值：**
 - `Dict[str, Any]`：模拟结果字典，包含：
   - `"success"` (bool)：模拟是否成功。
-  - `"final_regs"` (Dict)：最终寄存器状态。
-  - `"trace"` (List[Dict])：执行轨迹列表，每步包含 `"step"`、`"pc"`、`"op"`（反汇编）、`"opcode"`、`"type"`、`"rzil"`、`"regs"` 和 `"timestamp"`。
-  - `"vm_changes"` (List[Dict])：VM 状态变化列表。
-  - `"steps_executed"` (int)：实际执行的步数。
-  - `"execution_time"` (float)：模拟耗时（秒）。
-  - `"emulation_type"` (str)：模拟类型，固定为 "RzIL"。
+  - `"final_registers"` (Dict)：最终寄存器状态。
+  - `"execution_trace"` (List[Dict])：执行轨迹列表，每步包含 `"step"`、`"pc"`、`"instruction"`（反汇编）、`"opcode"`、`"type"`、`"registers"` 和 `"timestamp"`。
+  - `"vm_state_changes"` (List[Dict])：VM 状态变化列表，包含寄存器、内存和栈的变化。
+  - `"execution_summary"` (Dict)：执行摘要，包含 `"steps_executed"`、`"execution_time"`、`"memory_setup_success"` 和 `"architecture"`。
+  - `"emulation_type"` (str)：模拟类型，固定为 "RzIL_v2"。
+  - `"setup_log"` (List[str])：详细的设置日志。
   - 如果失败或超时，可能包含 `"error"` (str) 和 `"partial_trace"` (List[Dict])。
 
 **示例：**
 ```python
 from ai_agent import rz_utils
 
-result = rz_utils.emulate_function("/path/to/your/binary", function_name="calculate_key", max_steps=50)
+result = rz_utils.emulate_function(
+    binary_path="/path/to/your/binary",
+    function_name="calculate_key",
+    max_steps=50,
+    timeout=60,
+    stack_bytes=64,           # 读取64字节的栈快照
+    stack_size=0x20000,       # 128KB栈大小
+    stack_base=0x70000000,    # 栈基地址
+    data_size=0x2000,         # 8KB数据区域
+    data_base=0x60000000      # 数据区域基地址
+)
 if "error" in result:
     print(f"Emulation failed: {result['error']}")
+    # 打印设置日志以帮助调试
+    if "setup_log" in result:
+        print("Setup Log:")
+        for log_entry in result["setup_log"]:
+            print(f"  • {log_entry}")
 else:
-    print("Emulation trace:")
-    for step in result['trace']:
-        print(f"PC: {step['pc']}, OP: {step['op']}")
+    print("Emulation completed successfully!")
+    print(f"Steps executed: {result['execution_summary']['steps_executed']}")
+    print(f"Architecture: {result['execution_summary']['architecture']}")
     print("\nFinal Registers:")
-    print(result['final_regs'])
+    print(result['final_registers'])
 ```
 
 ---
