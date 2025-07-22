@@ -11,6 +11,9 @@ import json
 from typing import Dict, Any, List, Optional
 import re
 import threading
+from ai_agent.rz_emulator import (
+    emulate_function as emulate_function_impl,
+)
 
 # Global lock for rzpipe operations to prevent race conditions
 rz_lock = threading.Lock()
@@ -108,7 +111,7 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dic
                 node_entry = {
                     "id": n.get("id"),
                     "name": n.get("title"),
-                    "addr": n.get("offset"),
+                    "addr": hex(n.get("offset")) if n.get("offset") else "unknown",
                 }
                 nodes.append(node_entry)
                 id2off[node_entry["id"]] = node_entry["addr"]
@@ -155,16 +158,16 @@ def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[str,
             formatted_blocks = []
             for block in blocks_data:
                 b = {
-                    "addr": block.get("addr"),
+                    "addr": hex(block.get("addr")) if block.get("addr") else "unknown",
                     "size": block.get("size"),
                     "num_of_input_blocks": block.get("inputs", 0),
                     "num_of_output_blocks": block.get("outputs", 0),
                     "num_of_instructions": block.get("ninstr", 0),
-                    "jump_to_addr": block.get("jump"),
+                    "jump_to_addr": hex(block.get("jump")) if block.get("jump") else "unknown",
                     "jump_to_func_with_offset": rz.cmd(f"afd @ {block.get('jump')}").strip() if block.get("jump") else None
                 }
                 if "fail" in block:
-                    b["fall_through_addr"] = block["fail"]
+                    b["fall_through_addr"] = hex(block["fail"]) if block.get("fail") else "unknown"
                     b["fall_through_func_with_offset"] = rz.cmd(f"afd @ {block.get('fail')}").strip() if block.get("fail") else None
                 formatted_blocks.append({b['addr']: b})
             return formatted_blocks
@@ -264,7 +267,15 @@ def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, m
         finally:
             rz.quit()
 
-
+def emulate_function(binary_path: str, function_name: str,
+                     max_steps: int, timeout: int, stack_bytes: int,
+                     stack_size: int, stack_base: int, data_size: int,
+                     data_base: int) -> Dict[str, Any]:
+    """
+    Wraps the `emulate_function` from rz_emulator to provide a simple interface
+    """
+    return emulate_function_impl(binary_path, function_name, max_steps, timeout, stack_bytes,
+                                          stack_size, stack_base, data_size, data_base)
 
 if __name__ == "__main__":
     binary_path = "./00_angr_find/00_angr_find_arm"  # Example binary path
@@ -281,9 +292,9 @@ if __name__ == "__main__":
     print(f"Search results for '{query}':")
 
     for res in results:
-        print(f"  String: {res['string']}, Address: {hex(res['str_addr'])}")
+        print(f"  String: {res['string']}, Address: {res['str_addr']}")
         for ref in res['refs']:
-            print(f"    Ref: {ref['caller']} at {hex(ref['calling_addr'])} - {ref['disasm']}")
+            print(f"    Ref: {ref['caller']} at {ref['calling_addr']} - {ref['disasm']}")
 
     # Test get_call_graph
     print(f"\n📊 Generating call graph for function '{function_name}':")
@@ -300,4 +311,12 @@ if __name__ == "__main__":
     cfg_blocks = get_cfg_basic_blocks(binary_path, function_name)
     for block in cfg_blocks:
         for addr, block_info in block.items():
-            print(f"  Address: {hex(addr)}, Block: {block_info}")
+            print(f"  Address: {addr}, Block: {block_info}")
+
+    # Test emulate_function
+    print(f"\n🧪 Emulating function '{function_name}':")
+    result = emulate_function(binary_path, function_name, max_steps=10, timeout=60,
+                              stack_bytes=32, stack_size=0x10000,
+                              stack_base=0x70000000, data_size=0x1000,
+                              data_base=0x60000000)
+    print(f"Emulation result: {result}")

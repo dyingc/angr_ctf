@@ -316,12 +316,12 @@ def rzil_step_over(rz_instance, num_steps: int = 1) -> str:
         try:
             pc_output = rz_instance.cmd("aezvj PC")
             pc_data = json.loads(pc_output)
-            current_pc = pc_data.get("PC", "0x0")
+            current_pc = int(pc_data.get("PC", "0x0"), 16)
         except Exception as e:
             print(f"Failed to get current PC: {e}")
             return ""
 
-        print(f"Current PC: {current_pc}")
+        print(f"Current PC: {hex(current_pc)}")
 
         # 获取当前指令信息
         try:
@@ -402,9 +402,9 @@ def rzil_step_over(rz_instance, num_steps: int = 1) -> str:
                 # 获取执行后的PC用于验证
                 after_pc_output = rz_instance.cmd("aezvj PC")
                 after_pc_data = json.loads(after_pc_output)
-                actual_pc = after_pc_data.get("PC", "0x0")
+                actual_pc = int(after_pc_data.get("PC", "0x0"), 16)
 
-                print(f"✅ Single stepped from {current_pc} to {actual_pc}")
+                print(f"✅ Single stepped from {hex(current_pc)} to {hex(actual_pc)}")
 
                 all_outputs.append(exec_output)
 
@@ -588,11 +588,11 @@ def _improved_rzil_emulation(
     max_steps,
     result_queue,
     timeout_seconds=30,
-    stack_bytes: int = 32, # 新增参数
-    stack_size: int = 0x10000, # 新增参数
-    stack_base: int = 0x70000000, # 新增参数
-    data_size: int = 0x1000, # 新增参数
-    data_base: int = 0x60000000 # 新增参数
+    stack_bytes: int = 32,
+    stack_size: int = 0x10000,
+    stack_base: int = 0x70000000,
+    data_size: int = 0x1000,
+    data_base: int = 0x60000000
 ):
     """
     基于实际环境的改进版 RzIL 模拟
@@ -706,29 +706,50 @@ def emulate_function(
     function_name: str,
     max_steps: int = 100,
     timeout: int = 60,
-    stack_bytes: int = 32, # 新增参数
-    stack_size: int = 0x10000, # 新增参数
-    stack_base: int = 0x70000000, # 新增参数
-    data_size: int = 0x1000, # 新增参数
-    data_base: int = 0x60000000 # 新增参数
+    stack_bytes: int = 32,
+    stack_size: int = 0x10000,
+    stack_base: int = 0x70000000,
+    data_size: int = 0x1000,
+    data_base: int = 0x60000000
 ) -> Dict[str, Any]:
     """
-    Emulates a function using Rizin's RzIL for a number of steps and returns the trace.
+    使用 Rizin 的 RzIL 模拟指定函数的执行，支持指定步数和超时，返回执行轨迹。
 
-    This function uses a separate thread to run the emulation, allowing for a
-    timeout to prevent hangs on complex or infinite loops.
+    此函数在单独线程中运行模拟，以防止复杂或无限循环导致挂起。模拟包括内存设置、外部调用处理和状态变化跟踪。
+    所有操作均为线程安全，使用全局锁保护 rzpipe 操作。
 
     Args:
-        binary_path: The path to the binary file.
-        function_name: The name of the function to emulate.
-        max_steps: The maximum number of instructions to emulate.
-        timeout: The maximum time in seconds to wait for the emulation to complete.
+        binary_path: 二进制文件的路径。
+        function_name: 要模拟的函数名称（例如 'main' 或符号名）。
+        max_steps: 最大执行指令步数（默认: 100），防止无限执行。
+        timeout: 模拟的最大等待时间（秒，默认: 60）。
+        stack_bytes: 栈快照读取的字节数（默认: 32），用于跟踪栈变化。
+        stack_size: 栈内存区域的大小（默认: 0x10000，即 64KB）。
+        stack_base: 栈内存区域的基地址（默认: 0x70000000）。
+        data_size: 额外数据内存区域的大小（默认: 0x1000，即 4KB）。
+        data_base: 额外数据内存区域的基地址（默认: 0x60000000）。
 
     Returns:
-        A dictionary containing the emulation result, including 'success' status,
-        'final_registers', 'execution_trace' of execution steps, 'vm_state_changes' (VM state changes),
-        'execution_summary', and 'emulation_type'.
-        If an error occurs or timeout is reached, an 'error' message is included.
+        一个字典，包含模拟结果：
+            - 'success': bool，是否成功完成模拟。
+            - 'final_registers': dict，最终寄存器状态。
+            - 'execution_trace': list[dict]，每个步骤的执行信息（包括 PC、指令、寄存器等）。
+            - 'vm_state_changes': list[dict]，VM 状态变化记录（寄存器/内存写入等）。
+            - 'execution_summary': dict，摘要信息（步骤数、执行时间、架构等）。
+            - 'emulation_type': str，模拟类型（例如 'RzIL_v2'）。
+            - 'setup_log': list[str]，设置过程日志（可选）。
+        如果发生错误或超时：
+            - 'error': str，错误消息。
+            - 'timeout': bool（如果超时）。
+            - 'partial_trace': list[dict]（部分执行轨迹，如果可用）。
+
+    Raises:
+        无显式抛出，但内部可能因 rzpipe 错误而异常；结果通过返回字典处理。
+
+    示例:
+        result = emulate_function('/path/to/binary', 'main', max_steps=50)
+        if result['success']:
+            print(result['execution_summary'])
     """
     with rz_lock:
         print(f"🚀 Starting emulation: {binary_path} -> {function_name}")
