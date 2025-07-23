@@ -11,6 +11,8 @@ from typing import Dict, Any, List, Optional, Tuple
 import threading
 import queue
 import time
+import asyncio
+
 from ai_agent.libs.lib_emulate import (
     _simulate_external_call_effects,
 )
@@ -583,11 +585,11 @@ def _execute_emulation_loop(
     }
 
 def _improved_rzil_emulation(
-    rz_instance,
-    function_name,
-    max_steps,
-    result_queue,
-    timeout_seconds=30,
+    rz: rzpipe.open,
+    function_name: str,
+    max_steps: int,
+    result_queue: queue.Queue,
+    timeout_seconds: int = 30,
     stack_bytes: int = 32,
     stack_size: int = 0x10000,
     stack_base: int = 0x70000000,
@@ -595,20 +597,32 @@ def _improved_rzil_emulation(
     data_base: int = 0x60000000
 ):
     """
-    基于实际环境的改进版 RzIL 模拟
+    基于实际环境的改进版 RzIL 模拟，支持外部传入 rzpipe 实例和锁。
+
+    Args:
+        rz: 外部传入的 rzpipe 实例，用于共享上下文。
+        function_name: 要模拟的函数名。
+        max_steps: 最大执行步数。
+        result_queue: 用于返回结果的队列。
+        timeout_seconds: 超时时间（秒）。
+        stack_bytes: 栈快照字节数。
+        stack_size: 栈大小。
+        stack_base: 栈基址。
+        data_size: 数据段大小。
+        data_base: 数据段基址。
     """
     start_time = time.time()
     original_offset = None
-    setup_log: List[str] = [] # 明确类型注解
+    setup_log: List[str] = []
 
     try:
         # 1. 保存原始状态并导航到函数
-        original_offset = rz_instance.cmd("s").strip()
-        seek_result = rz_instance.cmd(f"s {function_name}") or rz_instance.cmd("s").strip() + " (Done)"
+        original_offset = rz.cmd("s").strip()
+        seek_result = rz.cmd(f"s {function_name}") or rz.cmd("s").strip() + " (Done)"
         setup_log.append(f"Navigate to function {function_name}: {seek_result}")
 
         # 2. 获取架构信息
-        binary_info = rz_instance.cmdj("ij")
+        binary_info = rz.cmdj("ij")
         if not binary_info:
             result_queue.put({"error": "Failed to get binary information", "success": False})
             return
@@ -620,12 +634,12 @@ def _improved_rzil_emulation(
         setup_log.append(f"Detected architecture: {arch} {bits}-bit")
 
         # 3. 检查 RzIL 支持
-        rzil_supported = _check_rzil_support(rz_instance)
+        rzil_supported = _check_rzil_support(rz)
         setup_log.append(f"RzIL support check: {rzil_supported}")
 
         # 4. 初始化 RzIL VM
         print("Initializing RzIL VM...")
-        init_result = rz_instance.cmd("aezi") or "Initialization command Succeeded"
+        init_result = rz.cmd("aezi") or "Initialization command Succeeded"
         setup_log.append(f"RzIL VM initialization: {init_result}")
 
         if "error" in init_result.lower():
@@ -638,29 +652,29 @@ def _improved_rzil_emulation(
 
         # 5. 设置内存映射
         stack_pointer, base_pointer, initial_sp, memory_success = _setup_memory_with_malloc(
-            rz_instance, arch, bits, stack_size, stack_base, data_size, data_base # 传递参数
+            rz, arch, bits, stack_size, stack_base, data_size, data_base
         )
         setup_log.append(f"Memory mapping setup: {'success' if memory_success else 'failed'}")
 
         # 6. 设置寄存器
         print(f"Setting registers: {stack_pointer} = {hex(initial_sp)}")
-        sp_result = rz_instance.cmd(f"aezv {stack_pointer} {hex(initial_sp)}")
-        bp_result = rz_instance.cmd(f"aezv {base_pointer} {hex(initial_sp)}")
+        sp_result = rz.cmd(f"aezv {stack_pointer} {hex(initial_sp)}")
+        bp_result = rz.cmd(f"aezv {base_pointer} {hex(initial_sp)}")
         setup_log.append(f"Stack pointer setup: {sp_result.strip()}")
         setup_log.append(f"Base pointer setup: {bp_result.strip()}")
 
         # 7. 验证寄存器设置
-        sp_verify = rz_instance.cmd(f"aezv {stack_pointer}")
+        sp_verify = rz.cmd(f"aezv {stack_pointer}")
         setup_log.append(f"Stack pointer verification: {sp_verify.strip()}")
 
         # 8. 测试内存访问
         if memory_success:
-            memory_test = _test_memory_access(rz_instance, initial_sp)
+            memory_test = _test_memory_access(rz, initial_sp)
             setup_log.append(f"Memory access test: {'passed' if memory_test else 'failed'}")
 
         # 9. 执行模拟循环
         emulation_results = _execute_emulation_loop(
-            rz_instance, max_steps, timeout_seconds, start_time, stack_bytes # 传递 stack_bytes
+            rz, max_steps, timeout_seconds, start_time, stack_bytes
         )
         trace = emulation_results["execution_trace"]
         vm_changes = emulation_results["vm_state_changes"]
@@ -697,15 +711,15 @@ def _improved_rzil_emulation(
         # 恢复原始偏移量
         if original_offset:
             try:
-                rz_instance.cmd(f"s {original_offset}")
+                rz.cmd(f"s {original_offset}")
             except:
                 pass
 
-def emulate_function(
+async def emulate_function_async(
     binary_path: str,
     function_name: str,
-    max_steps: int = 100,
-    timeout: int = 60,
+    max_steps: int = 5,
+    timeout: int = 5,
     stack_bytes: int = 32,
     stack_size: int = 0x10000,
     stack_base: int = 0x70000000,
@@ -713,6 +727,7 @@ def emulate_function(
     data_base: int = 0x60000000
 ) -> Dict[str, Any]:
     """
+    emulation_function 的异步版本。
     使用 Rizin 的 RzIL 模拟指定函数的执行，支持指定步数和超时，返回执行轨迹。
 
     此函数在单独线程中运行模拟，以防止复杂或无限循环导致挂起。模拟包括内存设置、外部调用处理和状态变化跟踪。
@@ -751,36 +766,45 @@ def emulate_function(
         if result['success']:
             print(result['execution_summary'])
     """
-    with rz_lock:
-        print(f"🚀 Starting emulation: {binary_path} -> {function_name}")
+    loop = asyncio.get_running_loop()
 
-        rz = _open_rzpipe(binary_path)
-        try:
-            # 创建结果队列
-            result_queue = queue.Queue()
-
-            # 在单独线程中执行模拟
-            thread = threading.Thread(
-                target=_improved_rzil_emulation,
-                args=(rz, function_name, max_steps, result_queue, timeout,
-                      stack_bytes, stack_size, stack_base, data_size, data_base), # 传递所有参数
-                daemon=True
-            )
-
-            thread.start()
-
+    # Run the synchronous parts in a thread
+    def sync_emulation():
+        with rz_lock:
+            rz = _open_rzpipe(binary_path)
             try:
-                result = result_queue.get(timeout=timeout + 10)
-                return result
-            except queue.Empty:
-                return {
-                    "error": f"Emulation timed out after {timeout} seconds",
-                    "success": False,
-                    "timeout": True
-                }
+                # 创建结果队列
+                result_queue = queue.Queue()
 
-        finally:
-            rz.quit()
+                # 在单独线程中执行模拟
+                thread = threading.Thread(
+                    target=_improved_rzil_emulation,
+                    args=(rz, function_name, max_steps, result_queue, timeout,
+                          stack_bytes, stack_size, stack_base, data_size, data_base),
+                    daemon=True
+                )
+                thread.start()
+                thread.join(timeout=timeout + 5)
+
+                if thread.is_alive():
+                    return {
+                        "error": f"Emulation timed out after {timeout} seconds",
+                        "success": False,
+                        "timeout": True
+                    }
+
+                try:
+                    return result_queue.get_nowait()
+                except queue.Empty:
+                    return {
+                        "error": f"Emulation completed but no result available",
+                        "success": False,
+                        "timeout": True
+                    }
+            finally:
+                rz.quit()
+
+    return await loop.run_in_executor(None, sync_emulation)
 
 # ========== 使用示例和测试代码 ==========
 

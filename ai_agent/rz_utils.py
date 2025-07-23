@@ -11,9 +11,6 @@ import json
 from typing import Dict, Any, List, Optional
 import re
 import threading
-from ai_agent.rz_emulator import (
-    emulate_function as emulate_function_impl,
-)
 
 # Global lock for rzpipe operations to prevent race conditions
 rz_lock = threading.Lock()
@@ -266,16 +263,6 @@ def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, m
             return results
         finally:
             rz.quit()
-
-def emulate_function(binary_path: str, function_name: str,
-                     max_steps: int, timeout: int, stack_bytes: int,
-                     stack_size: int, stack_base: int, data_size: int,
-                     data_base: int) -> Dict[str, Any]:
-    """
-    Wraps the `emulate_function` from rz_emulator to provide a simple interface
-    """
-    return emulate_function_impl(binary_path, function_name, max_steps, timeout, stack_bytes,
-                                          stack_size, stack_base, data_size, data_base)
 
 if __name__ == "__main__":
     binary_path = "./00_angr_find/00_angr_find_arm"  # Example binary path
