@@ -1,7 +1,6 @@
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
-from typing import Dict, Any, List, Optional, Literal
-import rzpipe
+from typing import Dict, Any, List, Optional
 import json
 import sys, os
 import subprocess
@@ -10,12 +9,21 @@ import traceback
 from io import StringIO
 import contextlib
 import concurrent.futures
-from ai_agent import rz_utils as rzu # Import the new r2_utils module
+from ai_agent.backends.dispatcher import call_backend
+from ai_agent.libs import rz_utils as rzu
+import rzpipe  # Add missing import
 
-# Load configuration from YAML file
-config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
-with open(config_path) as f:
-    config = yaml.safe_load(f)
+# Lazy load configuration
+_config = None
+
+def get_config():
+    """Lazily load and return the configuration."""
+    global _config
+    if _config is None:
+        config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
+        with open(config_path) as f:
+            _config = yaml.safe_load(f)
+    return _config
 
 # Get the list of functions in a binary, using Rizin
 # Excluding those built-in functions
@@ -50,9 +58,9 @@ def get_function_list(binary_path:str, exclude_builtins:bool=True)->Dict[str, An
         shortented_func = {
             "offset": func["offset"],
             "name": func["name"],
-            "size": func["realsz"],
+            "size": func.get("realsz", 0),
             "file": func.get("file", ""),
-            "signature": func["signature"]
+            "signature": func.get("signature", "")
         }
         # Use the helper function from rz_utils to get detailed function info including callers
         detailed_func = rzu._get_function_via_addr(rz, func["offset"])
@@ -101,13 +109,16 @@ def get_disassembly(binary_path:str, function_name:str)->Dict[str, Any]:
     # Close the rzpipe session
     rz.quit()
 
-    disa_str = '\n'.join([f"{d['offset']}\t{d['disasm']}" for d in disassembly.get('ops')])
+    ops = disassembly.get('ops', [])
+    disa_str = '\n'.join([f"{d['offset']}\t{d['disasm']}" for d in ops])
 
+    # Use corrected key name: get_assembly_messages
+    config = get_config()
     return {"result": disa_str,
             "need_refine": False,
             "prompts": [
-                    config["tool_messages"]["get_assemly_messages"]["system"],
-                    config["tool_messages"]["get_assemly_messages"]["task"].format(original_assembly_code=disa_str)
+                    config["tool_messages"]["get_assembly_messages"]["system"],
+                    config["tool_messages"]["get_assembly_messages"]["task"].format(original_assembly_code=disa_str)
                 ]
         }
 
@@ -150,8 +161,9 @@ def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]: # Chan
     # Close the rzpipe session
     rz.quit()
 
-    pcode_str = pseudo_code.get('code')
+    pcode_str = pseudo_code.get('code', '')
 
+    config = get_config()
     return {
         "result": pcode_str,
         "need_refine": True,
@@ -164,7 +176,7 @@ def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]: # Chan
 pseudo_code_tool = StructuredTool.from_function(
     get_pseudo_code,
     name="get_pseudo_code",
-    description="Get pseudo C code of a specific function from a binary, \nusing Rizin's Ghidra plugin. Dependancies: Rizin with Ghidra plugin installed.",
+    description="Get pseudo C code of a specific function from a binary, \nusing Rizin's Ghidra plugin. Dependencies: Rizin with Ghidra plugin installed.",
     args_schema=PseudoCodeToolInput,
 )
 
@@ -298,7 +310,7 @@ class CallGraphToolInput(BaseModel):
     function_name: Optional[str] = Field(None, description="The name of the function to generate the call graph for. If None, a global call graph is generated.")
 
 def _get_call_graph_tool_impl(tool_input: CallGraphToolInput) -> Dict[str, Any]:
-    result = rzu.get_call_graph(tool_input.binary_path, tool_input.function_name)
+    result = call_backend('get_call_graph', tool_input.binary_path, tool_input.function_name)
     return {"result": result, "need_refine": False, "prompts": []}
 
 call_graph_tool = StructuredTool.from_function(
@@ -314,7 +326,7 @@ class CFGBasicBlocksToolInput(BaseModel):
     function_name: str = Field(..., description="The name of the function to get basic blocks for.")
 
 def _get_cfg_basic_blocks_tool_impl(tool_input: CFGBasicBlocksToolInput) -> Dict[str, Any]:
-    result = rzu.get_cfg_basic_blocks(tool_input.binary_path, tool_input.function_name)
+    result = call_backend('get_cfg_basic_blocks', tool_input.binary_path, tool_input.function_name)
     return {"result": result, "need_refine": False, "prompts": []}
 
 cfg_basic_blocks_tool = StructuredTool.from_function(
@@ -330,7 +342,7 @@ class GetStringsToolInput(BaseModel):
     min_length: int = Field(4, description="Minimum length of strings to extract.")
 
 def _get_strings_tool_impl(tool_input: GetStringsToolInput) -> Dict[str, Any]:
-    result = rzu.get_strings(tool_input.binary_path, tool_input.min_length)
+    result = call_backend('get_strings', tool_input.binary_path, tool_input.min_length)
     return {"result": result, "need_refine": False, "prompts": []}
 
 get_strings_tool = StructuredTool.from_function(
@@ -348,7 +360,7 @@ class SearchStringRefsToolInput(BaseModel):
     max_refs: int = Field(50, description="Maximum number of references to return per string.")
 
 def _search_string_refs_tool_impl(tool_input: SearchStringRefsToolInput) -> Dict[str, Any]:
-    result = rzu.search_string_refs(tool_input.binary_path, tool_input.query, tool_input.ignore_case, tool_input.max_refs)
+    result = call_backend('search_string_refs', tool_input.binary_path, tool_input.query, tool_input.ignore_case, tool_input.max_refs)
     return {"result": result, "need_refine": False, "prompts": []}
 
 search_string_refs_tool = StructuredTool.from_function(
@@ -366,7 +378,7 @@ class EmulateFunctionToolInput(BaseModel):
     timeout: int = Field(60, description="Maximum execution time in seconds before timeout.")
 
 def _emulate_function_tool_impl(tool_input: EmulateFunctionToolInput) -> Dict[str, Any]:
-    result = rzu.emulate_function(tool_input.binary_path, tool_input.function_name, tool_input.max_steps, tool_input.timeout)
+    result = call_backend('emulate_function', tool_input.binary_path, tool_input.function_name, max_steps=tool_input.max_steps, timeout=tool_input.timeout)
     return {"result": result, "need_refine": False, "prompts": []}
 
 emulate_function_tool = StructuredTool.from_function(
@@ -443,7 +455,7 @@ def execute_os_command(command: str, timeout: int = 60) -> Dict[str, Any]:
 execute_os_command_tool = StructuredTool.from_function(
     execute_os_command,
     name="execute_os_command",
-    description="Execute an OS command and return the output. This can be used for anything from preparing the environment, installing missing dependancies, verifying file existence, to running scripts or binaries, etc.",
+    description="Execute an OS command and return the output. This can be used for anything from preparing the environment, installing missing dependencies, verifying file existence, to running scripts or binaries, etc.",
     args_schema=ExecuteOSCommandToolInput,
 )
 
@@ -455,32 +467,32 @@ class InternalInferenceToolInput(BaseModel):
     validation_check: Optional[str] = Field(None, description="Internal validation or consistency check explanation.")
 
     def get_inference_repr(self) -> str:
-        repr = f"Known Facts:\n"
+        text = f"Known Facts:\n"
         for fact in self.known_facts:
-            repr += f"- {fact}\n"
-        repr += f"Reasoning Method: {self.reasoning_method}\n"
-        repr += f"Arguments:\n"
+            text += f"- {fact}\n"
+        text += f"Reasoning Method: {self.reasoning_method}\n"
+        text += f"Arguments:\n"
         for arg in self.arguments:
-            repr += f"- {arg}\n"
-        repr += f"Conclusion:\n"
+            text += f"- {arg}\n"
+        text += f"Conclusion:\n"
         for insight in self.inferred_insights:
-            repr += f"- {insight}\n"
+            text += f"- {insight}\n"
         if self.validation_check:
-            repr += f"Validation Check: {self.validation_check}\n"
-        return repr
+            text += f"Validation Check: {self.validation_check}\n"
+        return text
 
 def do_internal_inference(
     known_facts: List[str],
     reasoning_method: str,
     arguments: List[str],
-    inferred_insights: List[str] = Field(default_factory=list), # Changed default to empty list
+    inferred_insights: Optional[List[str]] = None,
     validation_check: Optional[str] = None,
 ) -> InternalInferenceToolInput:
     return InternalInferenceToolInput(
         known_facts=known_facts,
         reasoning_method=reasoning_method,
         arguments=arguments,
-        inferred_insights=inferred_insights if inferred_insights is not None else [], # Ensure it's a list
+        inferred_insights=inferred_insights or [],
         validation_check=validation_check,
     )
 
