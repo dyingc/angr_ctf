@@ -18,8 +18,6 @@ from mcp.server.fastmcp import FastMCP
 from typing import List, Optional, Any, Dict
 
 # Import the functions and their input models from the existing modules
-from ai_agent import rz_utils
-from ai_agent import rz_emulator
 from ai_agent.reverse_engineering import (
     get_function_list as get_function_list_impl,
     get_disassembly as get_disassembly_impl,
@@ -29,6 +27,7 @@ from ai_agent.reverse_engineering import (
     do_internal_inference as do_internal_inference_impl,
     InternalInferenceToolInput
 )
+from ai_agent.core import call_graph, cfg, strings, emulation
 
 # Initialize the FastMCP server
 mcp = FastMCP(
@@ -39,7 +38,7 @@ mcp = FastMCP(
 @mcp.tool()
 async def get_function_list(binary_path: str, exclude_builtins: bool = True) -> Dict[str, Any]:
     """
-    Get the list of functions in a binary using Rizin.
+    Get the list of functions in a binary using the configured backend.
 
     Args:
         binary_path: The absolute path to the binary file.
@@ -53,7 +52,7 @@ async def get_function_list(binary_path: str, exclude_builtins: bool = True) -> 
 @mcp.tool()
 async def get_disassembly(binary_path: str, function_name: str) -> Dict[str, Any]:
     """
-    Get disassembly of a specific function from a binary using Rizin.
+    Get disassembly of a specific function from a binary using the configured backend.
 
     Args:
         binary_path: The absolute path to the binary file.
@@ -67,7 +66,7 @@ async def get_disassembly(binary_path: str, function_name: str) -> Dict[str, Any
 @mcp.tool()
 async def get_pseudo_code(binary_path: str, function_name: str) -> Dict[str, Any]:
     """
-    Get pseudo C code of a function using Rizin's Ghidra decompiler plugin.
+    Get pseudo C code of a function using the configured backend's decompiler.
 
     Args:
         binary_path: The absolute path to the binary file.
@@ -79,7 +78,7 @@ async def get_pseudo_code(binary_path: str, function_name: str) -> Dict[str, Any
     return get_pseudo_code_impl(binary_path, function_name)
 
 @mcp.tool()
-async def get_call_graph(binary_path: str, function_name: str) -> Dict[str, Any]:
+async def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Generates a call graph for a binary. Global or for a specific function.
 
@@ -90,7 +89,7 @@ async def get_call_graph(binary_path: str, function_name: str) -> Dict[str, Any]
     Returns:
         A dictionary containing the nodes and edges of the call graph.
     """
-    return rz_utils.get_call_graph(binary_path, function_name)
+    return call_graph.get_call_graph(binary_path, function_name)
 
 @mcp.tool()
 async def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[int, Any]]:
@@ -105,7 +104,7 @@ async def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dic
         A list of dictionaries, each representing a basic block, with
         {addr: {"addr": addr, "size": size, 'num_of_input_blocks': num_of_input_blocks, 'num_of_output_blocks': num_of_output_blocks, 'num_of_instructions': num_of_instructions, 'jump_to_addr': jump_to_addr, 'jump_to_func_with_offset': jump_to_func_with_offset}} format.
     """
-    return rz_utils.get_cfg_basic_blocks(binary_path, function_name)
+    return cfg.get_cfg_basic_blocks(binary_path, function_name)
 
 @mcp.tool()
 async def get_strings(binary_path: str, min_length: int = 4) -> List[Dict[str, Any]]:
@@ -119,7 +118,7 @@ async def get_strings(binary_path: str, min_length: int = 4) -> List[Dict[str, A
     Returns:
         A list of dictionaries, each representing a found string.
     """
-    return rz_utils.get_strings(binary_path, min_length)
+    return strings.get_strings(binary_path, min_length)
 
 @mcp.tool()
 async def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, max_refs: int = 50) -> List[Dict[str, Any]]:
@@ -135,12 +134,12 @@ async def search_string_refs(binary_path: str, query: str, ignore_case: bool = T
     Returns:
         A list of dictionaries for each matched string and its references.
     """
-    return rz_utils.search_string_refs(binary_path, query, ignore_case, max_refs)
+    return strings.search_string_refs(binary_path, query, ignore_case, max_refs)
 
 @mcp.tool()
 async def emulate_function(binary_path: str, function_name: str, max_steps: int = 6, timeout: int = 5, stack_bytes: int = 32, stack_size: int = 0x10000, stack_base: int = 0x70000000, data_size: int = 0x1000, data_base: int = 0x60000000) -> Dict[str, Any]:
     """
-    Performs a step-by-step emulation of a function using Rizin's ESIL.
+    Performs a step-by-step emulation of a function using the configured backend.
 
     Args:
         binary_path: The absolute path to the binary file.
@@ -156,7 +155,7 @@ async def emulate_function(binary_path: str, function_name: str, max_steps: int 
     Returns:
         A dictionary containing the emulation trace and final register states, or an error.
     """
-    return await rz_emulator.emulate_function_async(binary_path, function_name, max_steps, timeout, stack_bytes, stack_size, stack_base, data_size, data_base)
+    return emulation.emulate_function(binary_path, function_name, max_steps, timeout, stack_bytes=stack_bytes, stack_size=stack_size, stack_base=stack_base, data_size=data_size, data_base=data_base)
 
 @mcp.tool()
 async def execute_python_code(code: str, timeout: int = 60) -> Dict[str, Any]:
