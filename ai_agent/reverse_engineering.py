@@ -10,8 +10,6 @@ from io import StringIO
 import contextlib
 import concurrent.futures
 from ai_agent.backends.dispatcher import call_backend
-from ai_agent.libs import rz_utils as rzu
-import rzpipe  # Add missing import
 
 # Lazy load configuration
 _config = None
@@ -25,7 +23,7 @@ def get_config():
             _config = yaml.safe_load(f)
     return _config
 
-# Get the list of functions in a binary, using Rizin
+# Get the list of functions in a binary, using the backend dispatcher
 # Excluding those built-in functions
 
 class FunctionListToolInput(BaseModel):
@@ -33,100 +31,38 @@ class FunctionListToolInput(BaseModel):
     exclude_builtins: bool = Field(True, description="Whether to exclude the system or C-library built-in functions, usually starts with \"sym.\".")
 
 def get_function_list(binary_path:str, exclude_builtins:bool=True)->Dict[str, Any]:
-    # Open the binary in Rizin
-    rz = rzpipe.open(binary_path)
-
-    # Perform analysis (equivalent to "aaa" command)
-    rz.cmd("aaa")
-
-    # Get function list (equivalent to "afl" command)
-    functions = rz.cmd("aflj")  # JSON output
-
-    # Parse JSON output
-    if not functions or not isinstance(functions, str):
-        return {"result": [],
-                "need_refine": False,
-                "prompts": []}
-
-    func_list = json.loads(functions)
-    # Filter out built-in functions if needed
-    if exclude_builtins:
-        func_list = [f for f in func_list if not f["name"].startswith("sym.imp.") and not f["name"].startswith("func.")]
-
-    shortented_func_list = []
-    for func in func_list:
-        shortented_func = {
-            "offset": func["offset"],
-            "name": func["name"],
-            "size": func.get("realsz", 0),
-            "file": func.get("file", ""),
-            "signature": func.get("signature", "")
-        }
-        # Use the helper function from rz_utils to get detailed function info including callers
-        detailed_func = rzu._get_function_via_addr(rz, func["offset"])
-        if detailed_func:
-            shortented_func["called_by"] = detailed_func.get("called_by", [])
-        else:
-            shortented_func["called_by"] = []
-        shortented_func_list.append(shortented_func)
-
-    # Close the rzpipe session
-    rz.quit()
-    result = {"result": shortented_func_list,
-              "need_refine": False,
-              "prompts": []}
+    # Use the backend dispatcher to get the function list
+    # Note: The backend's get_function_list may not include 'called_by' information.
+    # This is a limitation of the current backend implementation.
+    result = call_backend('get_function_list', binary_path, exclude_builtins)
     return result
 
 # Create the function_list_tool tool
 function_list_tool = StructuredTool.from_function(
     get_function_list,
     name="get_function_list",
-    description="Get the list of functions in a binary, using Rizin. Exclude built-in functions by default. Dependencies: Rizin installed and available in PATH.",
+    description="Get the list of functions in a binary, using the configured backend (Rizin or Radare2). Exclude built-in functions by default.",
     args_schema=FunctionListToolInput,
 )
 
 # get_function_list(binary_path=file_name, exclude_builtins=True)
 
-# Get disassembly of a specific function from a binary, using Rizin
+# Get disassembly of a specific function from a binary, using the backend dispatcher
 
 class DisassemblyToolInput(BaseModel):
     binary_path: str = Field(..., description="The path to the binary file.")
     function_name: str = Field(..., description="The name of the function to disassemble.")
 
 def get_disassembly(binary_path:str, function_name:str)->Dict[str, Any]:
-    # Open the binary in Rizin
-    rz = rzpipe.open(binary_path)
-
-    # Perform analysis (equivalent to "aaa" command)
-    rz.cmd("e scr.color=0; aaa")
-
-    # Get disassembly of the function (equivalent to "pdf @ function_name" command)
-    disassembly = rz.cmd(f"pdfj @ {function_name}")
-    if not disassembly or not isinstance(disassembly, str):
-        return {"result": "", "need_refine": False, "prompts": []}
-    disassembly = json.loads(disassembly)
-
-    # Close the rzpipe session
-    rz.quit()
-
-    ops = disassembly.get('ops', [])
-    disa_str = '\n'.join([f"{d['offset']}\t{d['disasm']}" for d in ops])
-
-    # Use corrected key name: get_assembly_messages
-    config = get_config()
-    return {"result": disa_str,
-            "need_refine": False,
-            "prompts": [
-                    config["tool_messages"]["get_assembly_messages"]["system"],
-                    config["tool_messages"]["get_assembly_messages"]["task"].format(original_assembly_code=disa_str)
-                ]
-        }
+    # Use the backend dispatcher to get the disassembly
+    result = call_backend('get_disassembly', binary_path, function_name)
+    return result
 
 # Create the disassembly_tool tool
 disassembly_tool = StructuredTool.from_function(
     get_disassembly,
     name="get_disassembly",
-    description="Get disassembly of a specific function from a binary, using Rizin. Dependencies: Rizin installed and available in PATH.",
+    description="Get disassembly of a specific function from a binary, using the configured backend (Rizin or Radare2).",
     args_schema=DisassemblyToolInput,
 )
 
