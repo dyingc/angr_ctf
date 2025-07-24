@@ -69,21 +69,15 @@ disassembly_tool = StructuredTool.from_function(
 # get_disassembly(file_name, "dbg.main")
 
 
-# Get the pseudo code of a specific function from a binary, using Rizin's Ghidra plugin
+# Get the pseudo code of a specific function from a binary, using the backend dispatcher
 class PseudoCodeToolInput(BaseModel):
     binary_path: str = Field(..., description="The path to the binary file.")
     function_name: str = Field(..., description="The name of the function to get pseudo C code.")
 
-def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]: # Changed return type to Dict[str, Any]
-    # Open the binary in Rizin
-    rz = rzpipe.open(binary_path)
-
-    # Perform analysis (equivalent to "aaa" command)
-    rz.cmd("e scr.color=0; aaa")
-
-    # Get pseudo code of the function (equivalent to "pdg @ function_name" command)
-    pseudo_code = rz.cmd(f"pdgj @ {function_name}")
-    if not pseudo_code or not isinstance(pseudo_code, str):
+def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]:
+    # Use the backend dispatcher to get the pseudo code
+    pcode_str = call_backend('get_pseudo_code', binary_path, function_name)
+    if not pcode_str:
         return {
             "result": "",
             "need_refine": True,
@@ -92,12 +86,6 @@ def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]: # Chan
                 config["tool_messages"]["get_pseudo_code_messages"]["task"].format(original_pseudo_code="")
             ]
         }
-    pseudo_code = json.loads(pseudo_code)
-
-    # Close the rzpipe session
-    rz.quit()
-
-    pcode_str = pseudo_code.get('code', '')
 
     config = get_config()
     return {

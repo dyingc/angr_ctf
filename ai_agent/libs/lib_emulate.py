@@ -1,21 +1,31 @@
 from typing import Dict, Any, List
 import json
 
-def _simulate_external_call_effects(rz_instance, instruction_disasm: str, current_op: Dict[str, Any], arch: str, bits: int) -> str:
+def simulate_external_call(r2_or_rz, backend: str, instruction_disasm: str, current_op: Dict[str, Any], arch: str, bits: int) -> str:
     """
-    增强版外部函数调用效果模拟器
-
-    支持更多架构，生成正确的执行输出，并正确调整PC寄存器到下一条指令位置
+    统一的外部函数调用效果模拟器，支持 Rizin (RzIL) 和 Radare2 (ESIL)。
 
     Args:
-        rz_instance: rzpipe 实例
-        instruction_disasm: 指令反汇编文本
-        current_op: 当前指令的信息字典（包含offset等信息）
-        arch: 架构名称 (如 "x86", "arm", "ppc", 等)
-        bits: 位数 (32 或 64)
+        r2_or_rz: r2pipe 或 rzpipe 实例。
+        backend: 后端类型，"r2" 表示 Radare2, "rz" 表示 Rizin。
+        instruction_disasm: 指令反汇编文本。
+        current_op: 当前指令的信息字典（包含offset等信息）。
+        arch: 架构名称 (如 "x86", "arm", "ppc", 等)。
+        bits: 位数 (32 或 64)。
 
     Returns:
-        str: 模拟外部调用的JSON格式执行输出
+        str: 模拟外部调用的JSON格式执行输出。
+    """
+    if backend == "rz":
+        return _simulate_external_call_effects_rz(r2_or_rz, instruction_disasm, current_op, arch, bits)
+    elif backend == "r2":
+        return _simulate_external_call_effects_r2(r2_or_rz, instruction_disasm, current_op, arch, bits)
+    else:
+        raise ValueError(f"Unsupported backend: {backend}")
+
+def _simulate_external_call_effects_rz(rz_instance, instruction_disasm: str, current_op: Dict[str, Any], arch: str, bits: int) -> str:
+    """
+    Rizin (RzIL) 版本的外部函数调用效果模拟器。
     """
     disasm_lower = instruction_disasm.lower()
     changes = []
@@ -53,6 +63,63 @@ def _simulate_external_call_effects(rz_instance, instruction_disasm: str, curren
         if not function_effects:
             generic_effects = _simulate_generic_call_effects(
                 rz_instance, arch_info, instruction_disasm
+            )
+            changes.extend(generic_effects)
+
+    except Exception as e:
+        print(f"❌ Error simulating external call: {e}")
+        changes.append({
+            "type": "simulation_error",
+            "error": str(e),
+            "instruction": instruction_disasm
+        })
+
+    return json.dumps(changes) if changes else ""
+
+def _simulate_external_call_effects_r2(r2_instance, instruction_disasm: str, current_op: Dict[str, Any], arch: str, bits: int) -> str:
+    """
+    Radare2 (ESIL) 版本的外部函数调用效果模拟器。
+    """
+    disasm_lower = instruction_disasm.lower()
+    changes = []
+
+    # 确定架构特定的寄存器名称
+    arch_info = _get_architecture_register_info(arch, bits)
+
+    # 获取当前指令的下一条指令地址（用于PC调整）
+    current_offset = current_op.get("offset", 0)
+    instruction_size = current_op.get("size", 4)  # 默认4字节指令长度
+    next_pc = hex(current_offset + instruction_size)
+
+    print(f"🎭 Simulating external call: {instruction_disasm}")
+    print(f"🏗️ Architecture: {arch} {bits}-bit")
+    print(f"📍 Current PC: {hex(current_offset)} -> Next PC: {next_pc}")
+
+    try:
+        # 1. 首先调整PC到下一条指令
+        # 读取当前PC值
+        current_regs_json = r2_instance.cmd("aerj")
+        current_regs = json.loads(current_regs_json) if current_regs_json else {}
+        old_pc = current_regs.get(arch_info["pc_register"], "0x0")
+        # 写入新的PC值
+        r2_instance.cmd(f"aer {arch_info['pc_register']}={next_pc}")
+
+        changes.append({
+            "type": "pc_write",
+            "old": old_pc,
+            "new": next_pc
+        })
+
+        # 2. 模拟特定外部函数的效果
+        function_effects = _simulate_specific_function_effects_r2(
+            r2_instance, disasm_lower, arch_info, instruction_disasm
+        )
+        changes.extend(function_effects)
+
+        # 3. 通用调用约定处理（如果没有特定函数处理）
+        if not function_effects:
+            generic_effects = _simulate_generic_call_effects_r2(
+                r2_instance, arch_info, instruction_disasm
             )
             changes.extend(generic_effects)
 
@@ -386,6 +453,214 @@ def _simulate_generic_call_effects(rz_instance, arch_info: Dict[str, str], instr
 
         # 2. 根据调用约定，可能需要恢复一些被调用者保存的寄存器
         # 这里简化处理，只是标记发生了外部调用
+        changes.append({
+            "type": "external_call",
+            "instruction": instruction_disasm,
+            "calling_convention": arch_info["calling_convention"],
+            "note": "Generic external function call simulated"
+        })
+
+    except Exception as e:
+        print(f"❌ Error in generic call simulation: {e}")
+        changes.append({
+            "type": "simulation_error",
+            "error": str(e),
+            "function": "generic_call_simulation"
+        })
+
+    return changes
+
+def _simulate_specific_function_effects_r2(r2_instance, disasm_lower: str, arch_info: Dict[str, str], instruction_disasm: str) -> List[Dict[str, Any]]:
+    """
+    Radare2 (ESIL) 版本：模拟特定已知函数的效果
+    """
+    changes = []
+    return_reg = arch_info["return_register"]
+
+    try:
+        # printf 系列函数
+        if any(func in disasm_lower for func in ["printf", "sprintf", "fprintf", "snprintf", "vprintf"]):
+            print("🖨️ Simulating printf-family function effects...")
+            # 读取当前返回寄存器值
+            current_regs_json = r2_instance.cmd("aerj")
+            current_regs = json.loads(current_regs_json) if current_regs_json else {}
+            old_ret_value = current_regs.get(return_reg, "0x0")
+            # 设置返回值
+            r2_instance.cmd(f"aer {return_reg}=0x10")  # 假设打印了16个字符
+
+            changes.append({
+                "type": "var_write",
+                "name": return_reg,
+                "old": old_ret_value,
+                "new": "0x10"
+            })
+
+        # scanf 系列函数
+        elif any(func in disasm_lower for func in ["scanf", "sscanf", "fscanf", "vscanf"]):
+            print("⌨️ Simulating scanf-family function effects...")
+            current_regs_json = r2_instance.cmd("aerj")
+            current_regs = json.loads(current_regs_json) if current_regs_json else {}
+            old_ret_value = current_regs.get(return_reg, "0x0")
+            r2_instance.cmd(f"aer {return_reg}=0x1")   # 假设成功读取了1个项目
+
+            changes.append({
+                "type": "var_write",
+                "name": return_reg,
+                "old": old_ret_value,
+                "new": "0x1"
+            })
+
+        # 内存分配函数
+        elif any(func in disasm_lower for func in ["malloc", "calloc", "realloc"]):
+            print("🧠 Simulating memory allocation function effects...")
+            current_regs_json = r2_instance.cmd("aerj")
+            current_regs = json.loads(current_regs_json) if current_regs_json else {}
+            old_ret_value = current_regs.get(return_reg, "0x0")
+            # 返回一个模拟的堆地址
+            fake_heap_addr = "0x10000000"
+            r2_instance.cmd(f"aer {return_reg}={fake_heap_addr}")
+
+            changes.append({
+                "type": "var_write",
+                "name": return_reg,
+                "old": old_ret_value,
+                "new": fake_heap_addr
+            })
+
+        # 内存释放函数
+        elif "free" in disasm_lower:
+            print("🗑️ Simulating free function effects...")
+            changes.append({
+                "type": "heap_operation",
+                "operation": "free",
+                "function": "free"
+            })
+
+        # 字符串函数
+        elif any(func in disasm_lower for func in ["strlen", "strcmp", "strcpy", "strcat", "strchr", "strstr"]):
+            print("📝 Simulating string function effects...")
+            current_regs_json = r2_instance.cmd("aerj")
+            current_regs = json.loads(current_regs_json) if current_regs_json else {}
+            old_ret_value = current_regs.get(return_reg, "0x0")
+
+            if "strlen" in disasm_lower:
+                r2_instance.cmd(f"aer {return_reg}=0x8")  # 假设字符串长度为8
+                new_value = "0x8"
+            elif "strcmp" in disasm_lower:
+                r2_instance.cmd(f"aer {return_reg}=0x0")  # 假设字符串相等
+                new_value = "0x0"
+            else:
+                r2_instance.cmd(f"aer {return_reg}=0x20000000")
+                new_value = "0x20000000"
+
+            changes.append({
+                "type": "var_write",
+                "name": return_reg,
+                "old": old_ret_value,
+                "new": new_value
+            })
+
+        # 数学函数
+        elif any(func in disasm_lower for func in ["sin", "cos", "tan", "sqrt", "pow", "log", "exp"]):
+            print("🔢 Simulating math function effects...")
+            current_regs_json = r2_instance.cmd("aerj")
+            current_regs = json.loads(current_regs_json) if current_regs_json else {}
+            old_ret_value = current_regs.get(return_reg, "0x0")
+            r2_instance.cmd(f"aer {return_reg}=0x3ff00000")  # 模拟浮点数1.0
+
+            changes.append({
+                "type": "var_write",
+                "name": return_reg,
+                "old": old_ret_value,
+                "new": "0x3ff00000"
+            })
+
+        # 文件操作函数
+        elif any(func in disasm_lower for func in ["fopen", "fclose", "fread", "fwrite", "fseek", "ftell"]):
+            print("📁 Simulating file operation function effects...")
+            current_regs_json = r2_instance.cmd("aerj")
+            current_regs = json.loads(current_regs_json) if current_regs_json else {}
+            old_ret_value = current_regs.get(return_reg, "0x0")
+
+            if "fopen" in disasm_lower:
+                r2_instance.cmd(f"aer {return_reg}=0x30000000")
+                new_value = "0x30000000"
+            elif "fclose" in disasm_lower:
+                r2_instance.cmd(f"aer {return_reg}=0x0")
+                new_value = "0x0"
+            elif any(func in disasm_lower for func in ["fread", "fwrite"]):
+                r2_instance.cmd(f"aer {return_reg}=0x100")
+                new_value = "0x100"
+            else:
+                r2_instance.cmd(f"aer {return_reg}=0x0")
+                new_value = "0x0"
+
+            changes.append({
+                "type": "var_write",
+                "name": return_reg,
+                "old": old_ret_value,
+                "new": new_value
+            })
+
+        # 系统调用
+        elif any(func in disasm_lower for func in ["exit", "_exit", "abort"]):
+            print("🚪 Simulating exit function effects...")
+            changes.append({
+                "type": "system_exit",
+                "function": "exit",
+                "note": "Program termination simulated"
+            })
+
+        # sleep/延迟函数
+        elif any(func in disasm_lower for func in ["sleep", "usleep", "nanosleep", "delay"]):
+            print("💤 Simulating sleep function effects...")
+            current_regs_json = r2_instance.cmd("aerj")
+            current_regs = json.loads(current_regs_json) if current_regs_json else {}
+            old_ret_value = current_regs.get(return_reg, "0x0")
+            r2_instance.cmd(f"aer {return_reg}=0x0")  # sleep通常返回0
+
+            changes.append({
+                "type": "var_write",
+                "name": return_reg,
+                "old": old_ret_value,
+                "new": "0x0"
+            })
+
+    except Exception as e:
+        print(f"❌ Error in specific function simulation: {e}")
+        changes.append({
+            "type": "simulation_error",
+            "error": str(e),
+            "function": "specific_function_simulation"
+        })
+
+    return changes
+
+def _simulate_generic_call_effects_r2(r2_instance, arch_info: Dict[str, str], instruction_disasm: str) -> List[Dict[str, Any]]:
+    """
+    Radare2 (ESIL) 版本：模拟通用函数调用的效果（当没有特定函数处理时）
+    """
+    changes = []
+    return_reg = arch_info["return_register"]
+
+    try:
+        print("🔄 Simulating generic external call effects...")
+
+        # 1. 设置一个通用的返回值
+        current_regs_json = r2_instance.cmd("aerj")
+        current_regs = json.loads(current_regs_json) if current_regs_json else {}
+        old_ret_value = current_regs.get(return_reg, "0x0")
+        generic_return_value = "0x1"  # 假设函数执行成功
+        r2_instance.cmd(f"aer {return_reg}={generic_return_value}")
+
+        changes.append({
+            "type": "var_write",
+            "name": return_reg,
+            "old": old_ret_value,
+            "new": generic_return_value
+        })
+
+        # 2. 标记为通用外部调用
         changes.append({
             "type": "external_call",
             "instruction": instruction_disasm,

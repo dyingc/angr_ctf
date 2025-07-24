@@ -81,7 +81,7 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None, depth:
                     # This part might need refinement based on exact agfj output structure for edges
                     # For simplicity, we'll just list nodes for now, or use a different r2 command if needed for edges
                     # A more robust approach for global graph might involve parsing 'agf' and then 'axf' for calls
-            
+
             return {"nodes": nodes, "edges": edges}
         finally:
             r2.quit()
@@ -290,11 +290,14 @@ def emulate_function(binary_path: str, function_name: str, max_steps: int = 100,
         future = executor.submit(_emulate_function_target, r2, function_name, max_steps, result_queue)
 
         try:
-            return result_queue.get(timeout=timeout)
+            result = result_queue.get(timeout=timeout)
+            if "error" in result:
+                return {"success": False, "error": result["error"]}
+            return result
         except queue.Empty:
-            return {"error": f"Emulation timed out after {timeout} seconds."}
+            return {"success": False, "error": f"Emulation timed out after {timeout} seconds."}
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return {"success": False, "error": f"An unexpected error occurred: {str(e)}"}
         finally:
             future.cancel()
             executor.shutdown(wait=False)
