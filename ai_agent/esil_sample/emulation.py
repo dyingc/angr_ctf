@@ -1,50 +1,55 @@
 #!/usr/bin/env python3
 """
-Enhanced ESIL Emulator for radare2
+Enhanced ESIL Emulator for radare2 - Optimized for LLM Analysis
 
-A comprehensive emulator for code block and function analysis using radare2's ESIL.
-Provides robust instruction classification, external function handling, and detailed
-execution tracing with memory snapshots at each step.
+专为 LLM 分析优化的模拟器，消除冗余的追踪数据。
+只记录实际发生变化的寄存器和内存，大幅减少输出大小。
 """
 
 import json
 import logging
-from typing import Dict, List, Optional, Union, Any, Tuple
+from typing import Dict, List, Optional, Union, Any, Tuple, Set, Literal
 from dataclasses import dataclass
 from enum import Enum
 
 
 class StopConditionType(Enum):
-    """Types of stop conditions for emulation."""
-    ADDRESS = "address"        # Stop at specific address
-    FUNCTION_END = "function_end"  # Stop at function boundary
-    INSTRUCTION_COUNT = "instruction_count"  # Stop after N instructions
-    EXPRESSION = "expression"  # Stop when ESIL expression is true
-    MANUAL = "manual"         # Manual control required
+    """模拟终止条件类型（全中文注释）"""
+    ADDRESS = "address"        # 到达指定地址后停止
+    FUNCTION_END = "function_end"  # 到达函数结束处停止
+    INSTRUCTION_COUNT = "instruction_count"  # 执行指定条数后停止
+    EXPRESSION = "expression"  # ESIL 条件表达式为真则停止
+    MANUAL = "manual"         # 需手动控制停止
 
 
 @dataclass
-class ExecutionSnapshot:
-    """Snapshot of execution state at a single step."""
-    pc: int                          # Program counter
-    instruction: str                 # Assembly instruction
-    instruction_type: str            # Instruction type (call, jump, mov, etc.)
-    opcode: str                     # Raw opcode bytes
-    registers: Dict[str, int]       # Register state
-    memory_changes: Dict[int, bytes] # Memory changes in this step
-    esil_expression: str            # ESIL representation
-    step_number: int                # Step counter
+class OptimizedExecutionSnapshot:
+    """优化的执行快照，仅包含发生变化的数据（中文注释）"""
+    pc: int                                    # 程序计数器
+    instruction: str                           # 汇编指令文本
+    instruction_type: str                      # 指令类型
+    opcode: str                                # 原始操作码字节
+    esil_expression: str                       # ESIL 表达式
+    step_number: int                           # 步骤编号
+
+    # 只记录有变化的数据（寄存器/内存）
+    register_changes: Dict[str, int]           # 本步变化的寄存器
+    memory_changes: Dict[int, bytes]           # 本步变化的内存
+
+    # 可选上下文，仅特殊情况下出现
+    new_registers: Optional[Set[str]] = None   # 首次出现的寄存器
+    accessed_memory: Optional[Set[int]] = None # 被访问但未被修改的内存地址
 
 
 class ESILEmulator:
     """
-    Enhanced ESIL emulator for radare2 with robust instruction handling
-    and comprehensive execution tracking.
+    优化的 ESIL 模拟器 - 专为 LLM 分析设计
+    消除冗余数据，专注于变化追踪
     """
 
     def __init__(self, r2_instance):
         """
-        Initialize the ESIL emulator.
+        初始化 ESIL 模拟器
 
         Args:
             r2_instance: radare2 instance (r2pipe or similar)
@@ -52,15 +57,46 @@ class ESILEmulator:
         self.r2 = r2_instance
         self.logger = logging.getLogger(__name__)
         self.external_handlers = {}
-        self.memory_snapshot_base = {}
-        self.setup_environment()
+
+        # 追踪模拟状态，仅用于检测寄存器/内存数据的变化
+        self.previous_registers = {}        # 上一次快照中的寄存器状态
+        self.previous_memory = {}           # 上一次快照中的内存状态
+        self.all_seen_registers = set()     # 所有出现过的寄存器名
+        self.all_seen_memory = set()        # 所有出现过的内存地址
+
+        # 优化选项开关
+        self.track_memory_access = False    # 是否追踪内存被访问但未修改的情况
+        self.minimal_mode = True            # 最小变化模式，仅记录关键性变化
+
+        self.setup_environment()            # 初始化 ESIL 环境配置
 
     def setup_environment(self):
-        """Set up optimal ESIL environment configuration."""
-        self.r2.cmd("e io.cache=true")       # Enable memory caching
-        self.r2.cmd("e asm.esil=false")      # Don't show ESIL by default
-        self.r2.cmd("e asm.bytes=true")      # Show instruction bytes
-        self.r2.cmd("e asm.comments=false")  # Reduce noise
+        """设置 ESIL 优化模拟环境（全中文注释）"""
+        self.r2.cmd("e io.cache=true")         # 启用内存缓存，提升读写效率
+        self.r2.cmd("e asm.esil=false")        # 默认不显示 ESIL 表达式，避免控制台噪声
+        self.r2.cmd("e asm.bytes=true")        # 显示汇编指令字节
+        self.r2.cmd("e asm.comments=false")    # 关闭自动注释
+        # 启用更详细的 ESIL 跟踪统计
+        self.r2.cmd("e esil.stats=true")
+
+    def set_optimization_level(self, level: Literal["minimal", "normal", "detailed"]) -> None:
+        """
+        设置优化级别
+
+        Args:
+            level: "minimal" - 只记录关键变化
+                   "normal" - 记录所有变化但去除冗余
+                   "detailed" - 包含访问追踪（适用于详细分析）
+        """
+        if level == "minimal":
+            self.minimal_mode = True
+            self.track_memory_access = False
+        elif level == "normal":
+            self.minimal_mode = False
+            self.track_memory_access = False
+        elif level == "detailed":
+            self.minimal_mode = False
+            self.track_memory_access = True
 
     def emulate_region(self,
                       start_addr: Union[str, int],
@@ -71,16 +107,15 @@ class ESILEmulator:
                       skip_external: bool = True,
                       max_steps: int = 10000) -> Dict[str, Any]:
         """
-        Unified region emulator for both code blocks and complete functions.
-
+        优化的区域模拟器 - 只返回变化数据
         Args:
-            start_addr: Starting address (can be function name like "sym.encrypt" or hex address)
-            end_addr: Ending address (None means auto-detect function/block boundary)
-            register_inputs: Register values {"rdi": 0x1234, "rsi": b"data"}
-            stack_inputs: Stack data {-0x10: b"input", -0x20: 0x1234} (negative = below ESP)
-            memory_inputs: Memory data {0x10000: b"test_data", 0x20000: 0x12345678}
-            skip_external: Whether to automatically skip external library functions
-            max_steps: Maximum steps to prevent infinite loops
+            start_addr: 起始地址（可以是函数名如 "sym.encrypt" 或十六进制地址）
+            end_addr: 结束地址（None 表示自动检测函数/块边界）
+            register_inputs: 寄存器初始值 {"rdi": 0x1234, "rsi": b"data"}
+            stack_inputs: 栈数据 {-0x10: b"input", -0x20: 0x1234}（负数表示 ESP 以下）
+            memory_inputs: 内存数据 {0x10000: b"test_data", 0x20000: 0x12345678}
+            skip_external: 是否自动跳过外部库函数
+            max_steps: 最大步数以防止无限循环
 
         Returns:
             Dict containing:
@@ -90,29 +125,31 @@ class ESILEmulator:
             - steps_executed: Total steps taken
             - stop_reason: Why emulation stopped
         """
-        # 1. Initialize VM and setup
+        # 1. 初始化 VM 和设置
         self._initialize_vm()
         self._setup_inputs(register_inputs, stack_inputs, memory_inputs)
 
-        # 2. Determine stop condition intelligently
+        # 2. 建立初始状态基线
+        self._establish_baseline()
+
+        # 3. 确定停止条件
         stop_condition = self._determine_stop_condition(start_addr, end_addr)
 
-        # 3. Execute with comprehensive monitoring
-        result = self._execute_with_monitoring(start_addr, stop_condition, skip_external, max_steps)
+        # 4. 执行优化的监控
+        result = self._execute_with_optimized_monitoring(
+            start_addr, stop_condition, skip_external, max_steps)
 
         return result
 
     def _initialize_vm(self):
-        """Initialize ESIL virtual machine with clean state."""
-        self.r2.cmd("aei-")      # Deinitialize if already running
-        self.r2.cmd("aei")       # Initialize ESIL VM state
-        self.r2.cmd("aeim-")     # Remove existing stack
-        self.r2.cmd("aeim 0x2000 0xffff")  # Initialize 64KB stack
+        """初始化 ESIL 虚拟机，保证寄存器/栈状态清零"""
+        self.r2.cmd("aei-")                       # 若已有模拟，先清理之
+        self.r2.cmd("aei")                        # 初始化 ESIL 虚拟机
+        self.r2.cmd("aeim-")                      # 清空已有栈
+        self.r2.cmd("aeim 0x2000 0xffff")         # 初始化 64KB 栈段
+        self.r2.cmd("ar0")                        # 寄存器全清零，保证无隔离问题
 
-        # Clear register state for clean start
-        self.r2.cmd("ar0")       # Clear all registers
-
-        # Set reasonable defaults
+        # 设置架构相关寄存器默认值（如基址指针等），否则部分 SSA 函数跟踪会出错
         arch_info = self.r2.cmdj("ij")
         if arch_info and "bin" in arch_info:
             bits = arch_info["bin"].get("bits", 64)
@@ -123,125 +160,26 @@ class ESILEmulator:
                 self.r2.cmd("aer esp=0xbffffff0")
                 self.r2.cmd("aer ebp=0xbffffff0")
 
-    def _determine_stop_condition(self, start_addr: Union[str, int],
-                                 end_addr: Optional[Union[str, int]]) -> Tuple[StopConditionType, Any]:
+    def _establish_baseline(self):
+        """建立当前模拟快照的变化基准（中文注释）"""
+        self.previous_registers = self._get_current_registers()     # 记录当前寄存器基线
+        self.previous_memory = self._get_relevant_memory()          # 记录当前内存基线
+
+        # 记录所有初始出现的寄存器/内存，便于后续去重统计
+        self.all_seen_registers = set(self.previous_registers.keys())
+        self.all_seen_memory = set(self.previous_memory.keys())
+
+        self.logger.debug(f"基线建立完成: 有 {len(self.previous_registers)} 个寄存器, "
+                         f"{len(self.previous_memory)} 处内存区域")
+
+    def _execute_with_optimized_monitoring(self, start_addr: Union[str, int],
+                                         stop_condition: Tuple[StopConditionType, Any],
+                                         skip_external: bool,
+                                         max_steps: int) -> Dict[str, Any]:
         """
-        Intelligently determine stop condition based on start/end parameters.
-
-        Args:
-            start_addr: Starting address or symbol
-            end_addr: Ending address or None for auto-detection
-
-        Returns:
-            Tuple of (StopConditionType, condition_value)
+        执行优化的监控 - 只追踪变化
         """
-        if end_addr is not None:
-            # Explicit end address provided
-            return (StopConditionType.ADDRESS, self._resolve_address(end_addr))
-
-        # Auto-detect based on start address
-        resolved_start = self._resolve_address(start_addr)
-
-        # Check if it's a function
-        if isinstance(start_addr, str) and start_addr.startswith("sym."):
-            func_info = self.r2.cmdj(f"afij @ {start_addr}")
-            if func_info and len(func_info) > 0:
-                func_end = func_info[0]["offset"] + func_info[0]["size"]
-                return (StopConditionType.FUNCTION_END, func_end)
-
-        # Check if it's within a known function
-        func_info = self.r2.cmdj(f"afij @ {resolved_start}")
-        if func_info and len(func_info) > 0:
-            func_end = func_info[0]["offset"] + func_info[0]["size"]
-            return (StopConditionType.FUNCTION_END, func_end)
-
-        # Fall back to basic block analysis
-        bb_info = self.r2.cmdj(f"abj @ {resolved_start}")
-        if bb_info and len(bb_info) > 0:
-            bb_end = bb_info[0]["addr"] + bb_info[0]["size"]
-            return (StopConditionType.ADDRESS, bb_end)
-
-        # Default: manual control needed
-        return (StopConditionType.MANUAL, None)
-
-    def _resolve_address(self, addr: Union[str, int]) -> int:
-        """Resolve address from symbol name or hex string to integer."""
-        if isinstance(addr, int):
-            return addr
-        if isinstance(addr, str):
-            if addr.startswith("0x"):
-                return int(addr, 16)
-            else:
-                # Assume it's a symbol, resolve it
-                result = self.r2.cmd(f"?v {addr}").strip()
-                return int(result, 16) if result else 0
-        return 0
-
-    def _setup_inputs(self, register_inputs: Optional[Dict],
-                     stack_inputs: Optional[Dict],
-                     memory_inputs: Optional[Dict]):
-        """
-        Set up multiple input types with robust handling.
-
-        Args:
-            register_inputs: Register values and data pointers
-            stack_inputs: Stack-relative data
-            memory_inputs: Absolute memory locations
-        """
-        # Store initial memory state for change tracking
-        self.memory_snapshot_base = self._get_memory_snapshot()
-
-        if register_inputs:
-            for reg, value in register_inputs.items():
-                if isinstance(value, bytes):
-                    # Allocate memory for bytes and point register to it
-                    addr = 0x10000 + len(register_inputs) * 0x1000
-                    self.r2.cmd(f"wx {value.hex()} @ {addr}")
-                    self.r2.cmd(f"aer {reg}={addr}")
-                    self.logger.debug(f"Set {reg} -> 0x{addr:x} (points to {len(value)} bytes)")
-                else:
-                    self.r2.cmd(f"aer {reg}={value}")
-                    self.logger.debug(f"Set {reg} = 0x{value:x}")
-
-        if stack_inputs:
-            for offset, value in stack_inputs.items():
-                # Get current stack pointer
-                esp_val = int(self.r2.cmd("aer esp").strip().split()[-1], 16)
-                target_addr = esp_val + offset
-
-                if isinstance(value, bytes):
-                    self.r2.cmd(f"wx {value.hex()} @ 0x{target_addr:x}")
-                    self.logger.debug(f"Stack[{offset:+d}] = {value} @ 0x{target_addr:x}")
-                else:
-                    self.r2.cmd(f"wx {value:08x} @ 0x{target_addr:x}")
-                    self.logger.debug(f"Stack[{offset:+d}] = 0x{value:x} @ 0x{target_addr:x}")
-
-        if memory_inputs:
-            for addr, value in memory_inputs.items():
-                if isinstance(value, bytes):
-                    self.r2.cmd(f"wx {value.hex()} @ 0x{addr:x}")
-                    self.logger.debug(f"Memory[0x{addr:x}] = {value}")
-                else:
-                    self.r2.cmd(f"wx {value:08x} @ 0x{addr:x}")
-                    self.logger.debug(f"Memory[0x{addr:x}] = 0x{value:x}")
-
-    def _execute_with_monitoring(self, start_addr: Union[str, int],
-                               stop_condition: Tuple[StopConditionType, Any],
-                               skip_external: bool,
-                               max_steps: int) -> Dict[str, Any]:
-        """
-        Execute emulation with comprehensive monitoring and tracing.
-
-        Args:
-            start_addr: Starting address for emulation
-            stop_condition: Tuple of (type, value) for stop condition
-            skip_external: Whether to skip external function calls
-            max_steps: Maximum steps to execute
-
-        Returns:
-            Comprehensive execution results with full trace
-        """
-        # Seek to start and initialize PC
+        # 初始化执行
         self.r2.cmd(f"s {start_addr}")
         self.r2.cmd("aeip")
 
@@ -249,18 +187,23 @@ class ESILEmulator:
         step_count = 0
         stop_reason = "completed"
 
-        self.logger.info(f"Starting emulation at {start_addr}, stop condition: {stop_condition}")
+        # 用于追踪整体变化统计
+        total_register_changes = 0
+        total_memory_changes = 0
+        unique_registers_modified = set()
+        unique_memory_modified = set()
+
+        self.logger.info(f"开始优化模拟 @ {start_addr}, 停止条件: {stop_condition}")
 
         while step_count < max_steps:
-            # Get current state
             current_pc = self._get_current_pc()
 
-            # Check stop conditions
+            # 检查停止条件
             if self._should_stop(current_pc, stop_condition):
                 stop_reason = f"reached_{stop_condition[0].value}"
                 break
 
-            # Get detailed instruction information using pdj (confirmed to have 'type' field)
+            # 获取指令信息
             try:
                 instr_info = self.r2.cmdj(f"pdj 1 @ 0x{current_pc:x}")
                 if not instr_info or len(instr_info) == 0:
@@ -274,55 +217,289 @@ class ESILEmulator:
                 esil_expr = instr.get("esil", "")
 
             except (json.JSONDecodeError, KeyError, IndexError) as e:
-                self.logger.warning(f"Failed to parse instruction at 0x{current_pc:x}: {e}")
+                self.logger.warning(f"解析指令失败 @ 0x{current_pc:x}: {e}")
                 instruction_text = self.r2.cmd(f"pi 1 @ 0x{current_pc:x}").strip()
                 instruction_type = "unknown"
                 opcode_bytes = ""
                 esil_expr = ""
 
-            # Handle different instruction types
-            step_successful = self._handle_instruction(current_pc, instruction_text,
-                                                     instruction_type, skip_external)
+            # 执行指令
+            step_successful = self._handle_instruction(
+                current_pc, instruction_text, instruction_type, skip_external)
 
             if not step_successful:
                 stop_reason = "execution_failed"
                 break
 
-            # Capture execution snapshot with memory changes
-            snapshot = ExecutionSnapshot(
+            # 捕获优化的执行快照
+            snapshot = self._create_optimized_snapshot(
                 pc=current_pc,
                 instruction=instruction_text,
                 instruction_type=instruction_type,
                 opcode=opcode_bytes,
-                registers=self._get_register_snapshot(),
-                memory_changes=self._get_memory_changes(),
                 esil_expression=esil_expr,
                 step_number=step_count
             )
 
-            execution_trace.append(snapshot)
-            step_count += 1
+            # 只在有变化时添加快照
+            if self._is_significant_step(snapshot):
+                execution_trace.append(snapshot)
 
-            # Update memory baseline for next step
-            self.memory_snapshot_base = self._get_memory_snapshot()
+                # 更新统计
+                total_register_changes += len(snapshot.register_changes)
+                total_memory_changes += len(snapshot.memory_changes)
+                unique_registers_modified.update(snapshot.register_changes.keys())
+                unique_memory_modified.update(snapshot.memory_changes.keys())
+
+            step_count += 1
 
         if step_count >= max_steps:
             stop_reason = "max_steps_reached"
 
+        # 生成优化的结果
+        final_registers = self._get_current_registers()
+        final_memory = self._get_relevant_memory()
+
+        # 计算最终状态相对于初始状态的变化
+        final_register_changes = self._compute_register_diff(
+            self.previous_registers, final_registers)
+        final_memory_changes = self._compute_memory_diff(
+            self.previous_memory, final_memory)
+
         return {
-            'final_registers': self._get_register_snapshot(),
-            'final_memory': self._get_memory_snapshot(),
+            'final_state': {
+                'register_changes': final_register_changes,
+                'memory_changes': final_memory_changes,
+                'total_registers': len(final_registers),
+                'total_memory_locations': len(final_memory)
+            },
             'execution_trace': execution_trace,
-            'steps_executed': step_count,
+            'execution_stats': {
+                'steps_executed': step_count,
+                'trace_entries': len(execution_trace),
+                'compression_ratio': f"{len(execution_trace)}/{step_count}" if step_count > 0 else "0/0",
+                'total_register_changes': total_register_changes,
+                'total_memory_changes': total_memory_changes,
+                'unique_registers_modified': len(unique_registers_modified),
+                'unique_memory_modified': len(unique_memory_modified)
+            },
             'stop_reason': stop_reason,
             'stop_condition': stop_condition
         }
 
+    def _create_optimized_snapshot(self, pc: int, instruction: str,
+                                 instruction_type: str, opcode: str,
+                                 esil_expression: str, step_number: int) -> OptimizedExecutionSnapshot:
+        """创建优化的执行快照 - 只包含变化"""
+
+        # 获取当前状态
+        current_registers = self._get_current_registers()
+        current_memory = self._get_relevant_memory()
+
+        # 计算变化
+        register_changes = self._compute_register_diff(self.previous_registers, current_registers)
+        memory_changes = self._compute_memory_diff(self.previous_memory, current_memory)
+
+        # 检测新出现的寄存器和内存（可选）
+        new_registers = None
+        accessed_memory = None
+
+        if not self.minimal_mode:
+            new_reg_keys = set(current_registers.keys()) - self.all_seen_registers
+            new_registers = new_reg_keys if new_reg_keys else None
+
+            if self.track_memory_access:
+                # 追踪被访问但未修改的内存
+                all_current_memory = set(current_memory.keys())
+                modified_memory = set(memory_changes.keys())
+                accessed_memory = all_current_memory - modified_memory - self.all_seen_memory
+                accessed_memory = accessed_memory if accessed_memory else None
+
+        # 更新已见集合
+        self.all_seen_registers.update(current_registers.keys())
+        self.all_seen_memory.update(current_memory.keys())
+
+        # 更新前一状态
+        self.previous_registers = current_registers
+        self.previous_memory = current_memory
+
+        return OptimizedExecutionSnapshot(
+            pc=pc,
+            instruction=instruction,
+            instruction_type=instruction_type,
+            opcode=opcode,
+            esil_expression=esil_expression,
+            step_number=step_number,
+            register_changes=register_changes,
+            memory_changes=memory_changes,
+            new_registers=new_registers,
+            accessed_memory=accessed_memory
+        )
+
+    def _compute_register_diff(self, prev_regs: Dict[str, int],
+                              curr_regs: Dict[str, int]) -> Dict[str, int]:
+        """计算寄存器变化 - 只返回实际改变的寄存器"""
+        changes = {}
+
+        # 检查修改的寄存器
+        for reg, value in curr_regs.items():
+            if reg not in prev_regs or prev_regs[reg] != value:
+                changes[reg] = value
+
+        # 在非最小模式下，检查消失的寄存器
+        if not self.minimal_mode:
+            for reg in prev_regs:
+                if reg not in curr_regs:
+                    changes[reg] = None  # 表示寄存器被清除
+
+        return changes
+
+    def _compute_memory_diff(self, prev_mem: Dict[int, bytes],
+                           curr_mem: Dict[int, bytes]) -> Dict[int, bytes]:
+        """计算内存变化 - 只返回实际改变的内存"""
+        changes = {}
+
+        # 检查修改的内存
+        for addr, data in curr_mem.items():
+            if addr not in prev_mem or prev_mem[addr] != data:
+                changes[addr] = data
+
+        # 在非最小模式下，检查被清除的内存
+        if not self.minimal_mode:
+            for addr in prev_mem:
+                if addr not in curr_mem:
+                    changes[addr] = b''  # 表示内存被清除
+
+        return changes
+
+    def _is_significant_step(self, snapshot: OptimizedExecutionSnapshot) -> bool:
+        """判断是否为重要步骤 - 决定是否包含在追踪中"""
+
+        # 总是包含有变化的步骤
+        if snapshot.register_changes or snapshot.memory_changes:
+            return True
+
+        # 在非最小模式下，包含特殊指令类型
+        if not self.minimal_mode:
+            important_types = ["call", "ret", "jmp", "cjmp", "int", "syscall"]
+            if snapshot.instruction_type in important_types:
+                return True
+
+        # 在详细模式下，包含新的访问
+        if self.track_memory_access:
+            if snapshot.new_registers or snapshot.accessed_memory:
+                return True
+
+        return False
+
+    def _get_current_registers(self) -> Dict[str, int]:
+        """获取当前寄存器状态"""
+        try:
+            reg_output = self.r2.cmd("aer").strip()
+            registers = {}
+
+            for line in reg_output.split('\n'):
+                if '=' in line:
+                    parts = line.split('=', 1)
+                    if len(parts) == 2:
+                        reg_name = parts[0].strip()
+                        reg_value = parts[1].strip()
+                        try:
+                            # 过滤无意义的寄存器（在最小模式下）
+                            if self.minimal_mode and self._is_insignificant_register(reg_name):
+                                continue
+                            registers[reg_name] = int(reg_value, 16)
+                        except ValueError:
+                            registers[reg_name] = 0
+
+            return registers
+        except Exception as e:
+            self.logger.error(f"获取寄存器快照失败: {e}")
+            return {}
+
+    def _is_insignificant_register(self, reg_name: str) -> bool:
+        """判断是否为无关紧要的寄存器（最小模式下过滤）"""
+        # 过滤掉段寄存器、调试寄存器等
+        insignificant = {
+            'cs', 'ds', 'es', 'fs', 'gs', 'ss',  # 段寄存器
+            'dr0', 'dr1', 'dr2', 'dr3', 'dr6', 'dr7',  # 调试寄存器
+            'cr0', 'cr2', 'cr3', 'cr4',  # 控制寄存器
+            'tr', 'ldtr', 'gdtr', 'idtr'  # 系统寄存器
+        }
+        return reg_name.lower() in insignificant
+
+    def _get_relevant_memory(self) -> Dict[int, bytes]:
+        """获取相关内存区域 - 智能选择重要区域"""
+        memory = {}
+        try:
+            registers = self._get_current_registers()
+
+            # 追踪栈区域（更小的窗口）
+            esp = registers.get('esp', registers.get('rsp', 0))
+            if esp:
+                try:
+                    # 只追踪栈顶附近的 128 字节而不是 256
+                    stack_hex = self.r2.cmd(f"px 128 @ {esp-64}")
+                    memory.update(self._parse_hex_dump(stack_hex, esp-64))
+                except:
+                    pass
+
+            # 只追踪明显的指针寄存器
+            pointer_regs = ['rdi', 'rsi', 'rdx', 'edi', 'esi', 'eax']
+
+            for reg in pointer_regs:
+                if reg in registers and self._is_valid_pointer(registers[reg]):
+                    try:
+                        ptr_addr = registers[reg]
+                        # 减少每个指针追踪的内存大小
+                        ptr_hex = self.r2.cmd(f"px 32 @ {ptr_addr}")
+                        memory.update(self._parse_hex_dump(ptr_hex, ptr_addr))
+                    except:
+                        pass
+
+        except Exception as e:
+            self.logger.debug(f"内存快照错误: {e}")
+
+        return memory
+
+    def _is_valid_pointer(self, addr: int) -> bool:
+        """判断是否为有效指针"""
+        # 更严格的指针验证
+        if addr < 0x1000:  # 空指针区域
+            return False
+        if addr >= 0xffffffff00000000:  # 内核空间（64位）
+            return False
+        if addr >= 0x80000000 and addr < 0xc0000000:  # 典型的无效区域
+            return False
+        return True
+
+    def _parse_hex_dump(self, hex_output: str, base_addr: int) -> Dict[int, bytes]:
+        """解析 radare2 十六进制转储输出"""
+        memory = {}
+        try:
+            for line in hex_output.split('\n'):
+                if line.startswith('0x') and ' ' in line:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        addr = int(parts[0], 16)
+                        # 只取前4个字节对以减少数据量
+                        hex_bytes = ' '.join(parts[1:5])
+                        try:
+                            data = bytes.fromhex(hex_bytes.replace(' ', ''))
+                            if data != b'\x00' * len(data):  # 跳过全零内存
+                                memory[addr] = data
+                        except ValueError:
+                            pass
+        except Exception:
+            pass
+        return memory
+
+    # 保留原有的其他方法但添加优化
     def _get_current_pc(self) -> int:
-        """Get current program counter value."""
-        pc_output = self.r2.cmd("aer eip").strip()  # Works for both 32/64 bit
+        """获取当前程序计数器值"""
+        pc_output = self.r2.cmd("aer eip").strip()
         if not pc_output:
-            pc_output = self.r2.cmd("aer rip").strip()  # Try 64-bit variant
+            pc_output = self.r2.cmd("aer rip").strip()
 
         try:
             return int(pc_output.split()[-1], 16)
@@ -331,11 +508,11 @@ class ESILEmulator:
 
     def _should_stop(self, current_pc: int, stop_condition: Tuple[StopConditionType, Any]) -> bool:
         """
-        Check if emulation should stop based on current PC and stop condition.
+        检查是否应该停止模拟
 
         Args:
-            current_pc: Current program counter value
-            stop_condition: Tuple of (StopConditionType, condition_value)
+            current_pc: 当前程序计数器值
+            stop_condition: 停止条件元组 (StopConditionType, condition_value)
 
         Returns:
             True if emulation should stop
@@ -352,16 +529,132 @@ class ESILEmulator:
 
         return False
 
+    def _determine_stop_condition(self, start_addr: Union[str, int],
+                                 end_addr: Optional[Union[str, int]]) -> Tuple[StopConditionType, Any]:
+        """
+        智能确定模拟停止条件
+
+        Args:
+            start_addr: 起始地址（符号名或整数地址）
+            end_addr: 结束地址（可选）
+
+        Returns:
+            (StopConditionType, 具体条件) 元组
+            优先级依次为：
+            1. 若提供 end_addr，直接停止于该地址
+            2. 若为符号名（如 sym.），自动解析对应函数的终止边界
+            3. 若能识别起始地址对应的函数或基本块，采用其 end offset
+            4. 若无信息，降级为手动模式
+
+        适用于自动检测函数范围的模拟终止，提升用例复现和调试效率。
+        """
+        if end_addr is not None:
+            return (StopConditionType.ADDRESS, self._resolve_address(end_addr))
+
+        resolved_start = self._resolve_address(start_addr)
+
+        if isinstance(start_addr, str) and start_addr.startswith("sym."):
+            func_info = self.r2.cmdj(f"afij @ {start_addr}")
+            if func_info and len(func_info) > 0:
+                func_end = func_info[0]["offset"] + func_info[0]["size"]
+                return (StopConditionType.FUNCTION_END, func_end)
+
+        func_info = self.r2.cmdj(f"afij @ {resolved_start}")
+        if func_info and len(func_info) > 0:
+            func_end = func_info[0]["offset"] + func_info[0]["size"]
+            return (StopConditionType.FUNCTION_END, func_end)
+
+        bb_info = self.r2.cmdj(f"abj @ {resolved_start}")
+        if bb_info and len(bb_info) > 0:
+            bb_end = bb_info[0]["addr"] + bb_info[0]["size"]
+            return (StopConditionType.ADDRESS, bb_end)
+
+        return (StopConditionType.MANUAL, None)
+
+    def _resolve_address(self, addr: Union[str, int]) -> int:
+        """
+        从符号名、十六进制/十进制字符串或整数解析为内存地址
+
+        Args:
+            addr: 地址参数——可为整数、0x前缀的字符串或符号名
+
+        Returns:
+            解析后的绝对地址（int）
+
+        示例：
+            - 0x1234       → 0x1234
+            - "main"       → 通过 radare2 求值获得符号地址
+            - 5678         → 5678
+
+        支持自动容错，可直接关联 r2 的 "?v" 求值接口。
+        """
+        if isinstance(addr, int):
+            return addr
+        if isinstance(addr, str):
+            if addr.startswith("0x"):
+                return int(addr, 16)
+            else:
+                result = self.r2.cmd(f"?v {addr}").strip()
+                return int(result, 16) if result else 0
+        return 0
+
+    def _setup_inputs(self, register_inputs: Optional[Dict],
+                     stack_inputs: Optional[Dict],
+                     memory_inputs: Optional[Dict]):
+        """
+        初始化向模拟注入的输入数据（寄存器/栈/内存）
+
+        Args:
+            register_inputs: 寄存器初始值（如 {"rdi": 0x1000, "rsi": b"AAAA"}）
+                - 对于 bytes 类型，将先放入内存，再让寄存器指向该地址
+            stack_inputs: 栈偏移与填充值（偏移相对 esp/rsp；适合函数参数/返回地址模拟）
+            memory_inputs: 直接按地址写入原始内存
+
+        注意：
+            - bytes 类型一律以 wx 写入
+            - int 类型自动补零、对齐，并以十六进制写入
+            - 调用前应保证虚拟机初始化与关键寄存器已准备完毕
+
+        该函数保障测试用例、自动化 Fuzzing 时输入的灵活性与可控性。
+        """
+        if register_inputs:
+            for reg, value in register_inputs.items():
+                if isinstance(value, bytes):
+                    addr = 0x10000 + len(register_inputs) * 0x1000
+                    self.r2.cmd(f"wx {value.hex()} @ {addr}")
+                    self.r2.cmd(f"aer {reg}={addr}")
+                    self.logger.debug(f"设置 {reg} -> 0x{addr:x} (指向 {len(value)} 字节)")
+                else:
+                    self.r2.cmd(f"aer {reg}={value}")
+                    self.logger.debug(f"设置 {reg} = 0x{value:x}")
+
+        if stack_inputs:
+            for offset, value in stack_inputs.items():
+                esp_val = int(self.r2.cmd("aer esp").strip().split()[-1], 16)
+                target_addr = esp_val + offset
+
+                if isinstance(value, bytes):
+                    self.r2.cmd(f"wx {value.hex()} @ 0x{target_addr:x}")
+                else:
+                    self.r2.cmd(f"wx {value:08x} @ 0x{target_addr:x}")
+
+        if memory_inputs:
+            for addr, value in memory_inputs.items():
+                if isinstance(value, bytes):
+                    self.r2.cmd(f"wx {value.hex()} @ 0x{addr:x}")
+                else:
+                    self.r2.cmd(f"wx {value:08x} @ 0x{addr:x}")
+
     def _handle_instruction(self, pc: int, instruction: str,
                           instr_type: str, skip_external: bool) -> bool:
         """
-        Handle execution of a single instruction with type-aware processing.
+        处理单条指令执行
 
         Args:
-            pc: Program counter
-            instruction: Assembly instruction text
-            instr_type: Instruction type from radare2 analysis
-            skip_external: Whether to skip external calls
+            pc: 当前程序计数器
+            instruction: 汇编指令文本
+            instr_type: 来自 radare2 分析的指令类型
+            skip_external: 是否跳过外部调用
 
         Returns:
             True if execution successful, False otherwise
@@ -377,16 +670,32 @@ class ESILEmulator:
             elif instr_type in ["int", "syscall"]:  # System calls/interrupts
                 return self._handle_syscall_instruction(instruction)
             else:
-                # Regular instruction - step normally
+                # 普通指令，直接单步模拟
                 result = self.r2.cmd("aes")
                 return "ESIL BREAK" not in result and "INVALID" not in result
 
         except Exception as e:
-            self.logger.error(f"Error handling instruction at 0x{pc:x}: {e}")
+            self.logger.error(f"处理指令错误 @ 0x{pc:x}: {e}")
             return False
 
     def _handle_call_instruction(self, instruction: str, skip_external: bool) -> bool:
-        """Handle call instructions with external function detection."""
+        """
+        处理 call（调用）类型指令
+
+        Args:
+            instruction: 指令文本，如 "call sym.func" 或 "call sym.imp.printf"
+            skip_external: 是否跳过外部库调用（如 printf、malloc）
+
+        行为说明：
+            - 若遇到外部调用（sym.imp.），且 skip_external=True，则自动模拟返回值并跳过
+            - 若为内部符号调用，优先判断是否需要进入（可通过白名单调控）；能跳过则直接 aeso
+            - 其他情况下按照常规 aes 步进
+
+        返回:
+            指令执行是否成功（bool）
+
+        这一设计便于 LLM 分析减少依赖外部环境及提高模拟覆盖率。
+        """
         if "sym.imp." in instruction and skip_external:
             # External library function
             func_name = self._extract_function_name(instruction, "sym.imp.")
@@ -402,28 +711,26 @@ class ESILEmulator:
                 self.r2.cmd("aeso")  # Step over
             return True
         else:
-            # Direct call or computed call
-            result = self.r2.cmd("aes")  # Step into by default
+            result = self.r2.cmd("aes")
             return "ESIL BREAK" not in result
 
     def _handle_jump_instruction(self, instruction: str) -> bool:
-        """Handle jump instructions."""
+        """处理跳转指令"""
         result = self.r2.cmd("aes")
         return "ESIL BREAK" not in result
 
     def _handle_return_instruction(self) -> bool:
-        """Handle return instructions."""
+        """处理返回指令"""
         result = self.r2.cmd("aes")
         return "ESIL BREAK" not in result
 
     def _handle_syscall_instruction(self, instruction: str) -> bool:
-        """Handle system calls and interrupts."""
-        # Could be extended to simulate specific syscalls
+        """处理系统调用和中断（如 int 0x80，syscall 指令，后续可扩展模拟常用系统调用行为）"""
         result = self.r2.cmd("aes")
         return "ESIL BREAK" not in result
 
     def _extract_function_name(self, instruction: str, prefix: str) -> str:
-        """Extract function name from call instruction."""
+        """从调用指令中提取函数名"""
         try:
             parts = instruction.split(prefix)
             if len(parts) > 1:
@@ -433,8 +740,7 @@ class ESILEmulator:
         return "unknown"
 
     def _should_step_into_function(self, func_name: str) -> bool:
-        """Decide whether to step into a user-defined function."""
-        # Skip common system functions but step into user code
+        """决定是否进入用户自定义函数（过滤常见系统启动析构符号，仅进入用户业务逻辑）"""
         skip_functions = {
             '__stack_chk_fail', '_init', '_fini', '__libc_start_main',
             '__do_global_dtors_aux', 'deregister_tm_clones', 'register_tm_clones'
@@ -442,11 +748,11 @@ class ESILEmulator:
         return func_name not in skip_functions
 
     def _handle_external_call(self, func_name: str):
-        """Handle external function calls with simulated side effects."""
+        """处理外部函数调用（支持自定义钩子/自动模拟返回值）"""
         if func_name in self.external_handlers:
-            self.external_handlers[func_name]()
+            self.external_handlers[func_name]()  # 调用自定义模拟处理器
         else:
-            # Default handling for common functions
+            # 常用库函数的默认模拟（无需副作用，仅设置返回值，方便静态分析）
             default_handlers = {
                 'printf': lambda: self.r2.cmd("aer rax=10"),
                 'scanf': lambda: self.r2.cmd("aer rax=1"),
@@ -454,169 +760,88 @@ class ESILEmulator:
                 'strlen': lambda: self.r2.cmd("aer rax=8"),
                 'strcmp': lambda: self.r2.cmd("aer rax=0"),
                 'memcpy': lambda: self.r2.cmd("aer rax=" + self.r2.cmd("aer rdi").strip().split()[-1]),
-                'free': lambda: None,  # No side effects for free
+                'free': lambda: None,  # free 无副作用
             }
 
             if func_name in default_handlers:
                 default_handlers[func_name]()
-                self.logger.debug(f"Simulated {func_name}")
+                self.logger.debug(f"模拟 {func_name}")
             else:
-                # Unknown function - set generic return value
+                # 任何无法识别的函数一律返回0，无副作用
                 self.r2.cmd("aer rax=0")
-                self.logger.warning(f"Unknown external function: {func_name}")
+                self.logger.warning(f"未知外部函数: {func_name}")
 
-    def _get_register_snapshot(self) -> Dict[str, int]:
-        """Get current register state as dictionary."""
-        try:
-            reg_output = self.r2.cmd("aer").strip()
-            registers = {}
-
-            for line in reg_output.split('\n'):
-                if '=' in line:
-                    parts = line.split('=', 1)
-                    if len(parts) == 2:
-                        reg_name = parts[0].strip()
-                        reg_value = parts[1].strip()
-                        try:
-                            registers[reg_name] = int(reg_value, 16)
-                        except ValueError:
-                            registers[reg_name] = 0
-
-            return registers
-        except Exception as e:
-            self.logger.error(f"Failed to get register snapshot: {e}")
-            return {}
-
-    def _get_memory_snapshot(self) -> Dict[int, bytes]:
-        """Get relevant memory regions with intelligent tracking."""
-        memory = {}
-        try:
-            # Get current register values for pointer tracking
-            registers = self._get_register_snapshot()
-
-            # Track stack region (256 bytes around ESP)
-            esp = registers.get('esp', registers.get('rsp', 0))
-            if esp:
-                try:
-                    stack_hex = self.r2.cmd(f"px 256 @ {esp-128}")
-                    memory.update(self._parse_hex_dump(stack_hex, esp-128))
-                except:
-                    pass
-
-            # Track memory pointed to by registers
-            pointer_regs = ['rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9',  # x64
-                          'edi', 'esi', 'eax', 'ebx', 'ecx', 'edx']   # x86
-
-            for reg in pointer_regs:
-                if reg in registers and registers[reg] > 0x1000:  # Likely valid pointer
-                    try:
-                        ptr_addr = registers[reg]
-                        ptr_hex = self.r2.cmd(f"px 64 @ {ptr_addr}")
-                        memory.update(self._parse_hex_dump(ptr_hex, ptr_addr))
-                    except:
-                        pass
-
-        except Exception as e:
-            self.logger.debug(f"Memory snapshot error: {e}")
-
-        return memory
-
-    def _parse_hex_dump(self, hex_output: str, base_addr: int) -> Dict[int, bytes]:
-        """Parse radare2 hex dump output into address->bytes mapping."""
-        memory = {}
-        try:
-            for line in hex_output.split('\n'):
-                if line.startswith('0x') and ' ' in line:
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        addr = int(parts[0], 16)
-                        hex_bytes = ' '.join(parts[1:9])  # First 8 hex pairs
-                        try:
-                            data = bytes.fromhex(hex_bytes.replace(' ', ''))
-                            memory[addr] = data
-                        except ValueError:
-                            pass
-        except Exception:
-            pass
-        return memory
-
-    def _get_memory_changes(self) -> Dict[int, bytes]:
-        """Get memory changes since last snapshot."""
-        # Simplified implementation - compare with baseline
-        current_memory = self._get_memory_snapshot()
-        changes = {}
-
-        # Compare with baseline and identify changes
-        for addr, data in current_memory.items():
-            if addr not in self.memory_snapshot_base or self.memory_snapshot_base[addr] != data:
-                changes[addr] = data
-
-        return changes
+    def add_external_handler(self, func_name: str, handler_func):
+        """添加自定义外部函数处理器"""
+        self.external_handlers[func_name] = handler_func
+        self.logger.info(f"添加外部处理器: {func_name}")
 
     def emulate_algorithm(self, func_name: str,
                          inputs: Dict[str, Union[int, bytes, str]] = None,
-                         trace_memory: bool = True) -> Dict[str, Any]:
+                         optimization_level: str = "normal") -> Dict[str, Any]:
         """
-        Simplified interface specifically for algorithm analysis.
+        专门用于算法分析的简化接口 - 优化版本
 
         Args:
-            func_name: Function name (e.g., "sym.encrypt_data")
-            inputs: Input data with automatic parameter mapping
-                   {"input_data": b"test", "key": b"secret", "length": 16}
-            trace_memory: Whether to trace memory changes at each step
+            func_name: 函数名 (例如 "sym.encrypt_data")
+            inputs: 输入数据，自动参数映射
+            optimization_level: "minimal", "normal", "detailed"
 
         Returns:
-            Analysis results with algorithm-specific insights
+            优化的分析结果，专注于算法行为
         """
-        # Auto-map inputs to calling convention
-        register_inputs, memory_inputs = self._map_algorithm_inputs(inputs or {})
+        # 设置优化级别
+        original_level = (self.minimal_mode, self.track_memory_access)
+        self.set_optimization_level(optimization_level)
 
-        result = self.emulate_region(
-            start_addr=func_name,
-            register_inputs=register_inputs,
-            memory_inputs=memory_inputs,
-            skip_external=True
-        )
+        try:
+            # 自动映射输入到调用约定
+            register_inputs, memory_inputs = self._map_algorithm_inputs(inputs or {})
 
-        # Add algorithm-specific analysis
-        result['algorithm_analysis'] = self._analyze_algorithm_behavior(result)
+            result = self.emulate_region(
+                start_addr=func_name,
+                register_inputs=register_inputs,
+                memory_inputs=memory_inputs,
+                skip_external=True
+            )
 
-        return result
+            # 添加算法特定的分析
+            result['algorithm_analysis'] = self._analyze_algorithm_behavior_optimized(result)
+
+            return result
+
+        finally:
+            # 恢复原始设置
+            self.minimal_mode, self.track_memory_access = original_level
 
     def _map_algorithm_inputs(self, inputs: Dict[str, Union[int, bytes, str]]) -> Tuple[Dict, Dict]:
-        """Map user-friendly inputs to registers and memory according to calling convention."""
+        """将用户友好的输入映射到寄存器和内存"""
         register_inputs = {}
         memory_inputs = {}
         current_mem_addr = 0x10000
 
-        # x86-64 calling convention: rdi, rsi, rdx, rcx, r8, r9
-        # x86-32 calling convention: stack-based
         calling_regs = ['rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9']
         reg_index = 0
 
-        # Get architecture info
         arch_info = self.r2.cmdj("ij")
         is_64bit = arch_info and arch_info.get("bin", {}).get("bits", 32) == 64
 
         for key, value in inputs.items():
             if isinstance(value, (bytes, str)):
-                # Store in memory and pass pointer
                 if isinstance(value, str):
-                    value = value.encode() + b'\x00'  # Null-terminate strings
+                    value = value.encode() + b'\x00'
 
                 memory_inputs[current_mem_addr] = value
 
                 if is_64bit and reg_index < len(calling_regs):
                     register_inputs[calling_regs[reg_index]] = current_mem_addr
                 else:
-                    # Fall back to stack or simplified approach
                     register_inputs[f'arg{reg_index}'] = current_mem_addr
 
-                current_mem_addr += len(value) + 16  # Add padding
+                current_mem_addr += len(value) + 16
                 reg_index += 1
 
             elif isinstance(value, int):
-                # Pass directly in register
                 if is_64bit and reg_index < len(calling_regs):
                     register_inputs[calling_regs[reg_index]] = value
                 else:
@@ -625,13 +850,17 @@ class ESILEmulator:
 
         return register_inputs, memory_inputs
 
-    def _analyze_algorithm_behavior(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze algorithm-specific behavior patterns."""
+    def _analyze_algorithm_behavior_optimized(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        优化的算法行为分析 - 专注于关键模式
+        """
         analysis = {
             'crypto_indicators': [],
             'loop_patterns': [],
             'data_transformations': [],
-            'suspicious_operations': []
+            'register_usage_patterns': {},
+            'memory_access_patterns': {},
+            'execution_hotspots': []
         }
 
         if 'execution_trace' not in result:
@@ -639,51 +868,270 @@ class ESILEmulator:
 
         trace = result['execution_trace']
 
-        # Detect crypto-like operations
-        crypto_patterns = ['xor', 'rol', 'ror', 'shl', 'shr', 'and', 'or']
+        # 分析加密相关操作 - 只看有变化的步骤
+        crypto_ops = ['xor', 'rol', 'ror', 'shl', 'shr', 'and', 'or']
+        crypto_count = {}
+
         for snapshot in trace:
             instr_lower = snapshot.instruction.lower()
-            for pattern in crypto_patterns:
-                if pattern in instr_lower:
+            for op in crypto_ops:
+                if op in instr_lower:
+                    crypto_count[op] = crypto_count.get(op, 0) + 1
                     analysis['crypto_indicators'].append({
                         'step': snapshot.step_number,
-                        'operation': pattern,
-                        'instruction': snapshot.instruction
+                        'operation': op,
+                        'pc': f"0x{snapshot.pc:x}",
+                        'register_changes': len(snapshot.register_changes),
+                        'memory_changes': len(snapshot.memory_changes)
                     })
 
-        # Detect loop patterns
+        # 检测循环模式 - 基于PC重复访问
         pc_visits = {}
         for snapshot in trace:
             pc = snapshot.pc
-            if pc in pc_visits:
-                pc_visits[pc] += 1
-            else:
-                pc_visits[pc] = 1
+            pc_visits[pc] = pc_visits.get(pc, 0) + 1
 
-        loops = [(pc, count) for pc, count in pc_visits.items() if count > 1]
-        analysis['loop_patterns'] = loops
+        # 只报告明显的循环（访问次数 > 2）
+        significant_loops = [(pc, count) for pc, count in pc_visits.items() if count > 2]
+        analysis['loop_patterns'] = [
+            {'pc': f"0x{pc:x}", 'iterations': count, 'likely_loop': count > 5}
+            for pc, count in significant_loops
+        ]
 
-        # Detect data transformations
-        prev_memory = {}
+        # 分析寄存器使用模式
+        reg_modification_count = {}
+        reg_first_use = {}
+
         for snapshot in trace:
-            for addr, data in snapshot.memory_changes.items():
-                if addr in prev_memory and prev_memory[addr] != data:
-                    analysis['data_transformations'].append({
-                        'step': snapshot.step_number,
-                        'address': addr,
-                        'before': prev_memory[addr],
-                        'after': data
-                    })
-            prev_memory.update(snapshot.memory_changes)
+            for reg in snapshot.register_changes:
+                if reg not in reg_modification_count:
+                    reg_modification_count[reg] = 0
+                    reg_first_use[reg] = snapshot.step_number
+                reg_modification_count[reg] += 1
+
+        analysis['register_usage_patterns'] = {
+            'most_modified': sorted(reg_modification_count.items(),
+                                  key=lambda x: x[1], reverse=True)[:5],
+            'first_use_timeline': reg_first_use
+        }
+
+        # 分析内存访问模式
+        memory_regions = {}
+        for snapshot in trace:
+            for addr in snapshot.memory_changes:
+                region = addr & 0xfffff000  # 4KB页对齐
+                if region not in memory_regions:
+                    memory_regions[region] = {'count': 0, 'first_step': snapshot.step_number}
+                memory_regions[region]['count'] += 1
+
+        analysis['memory_access_patterns'] = {
+            'active_regions': len(memory_regions),
+            'hotspots': [
+                {
+                    'region': f"0x{region:x}",
+                    'access_count': info['count'],
+                    'first_access': info['first_step']
+                }
+                for region, info in sorted(memory_regions.items(),
+                                         key=lambda x: x[1]['count'], reverse=True)[:3]
+            ]
+        }
+
+        # 识别执行热点 - 基于变化密度
+        if len(trace) > 10:
+            change_density = []
+            window_size = min(10, len(trace) // 3)
+
+            for i in range(len(trace) - window_size + 1):
+                window = trace[i:i + window_size]
+                total_changes = sum(
+                    len(s.register_changes) + len(s.memory_changes)
+                    for s in window
+                )
+                change_density.append({
+                    'start_step': window[0].step_number,
+                    'end_step': window[-1].step_number,
+                    'change_density': total_changes / window_size,
+                    'start_pc': f"0x{window[0].pc:x}"
+                })
+
+            # 找到变化密度最高的区域
+            hotspots = sorted(change_density, key=lambda x: x['change_density'], reverse=True)[:3]
+            analysis['execution_hotspots'] = hotspots
 
         return analysis
 
+    def compare_executions_optimized(self, func_name: str,
+                                   input_sets: List[Dict[str, Union[int, bytes, str]]],
+                                   optimization_level: str = "minimal") -> Dict[str, Any]:
+        """
+        优化的执行比较 - 专注于关键差异
+
+        Args:
+            func_name: 要分析的函数名
+            input_sets: 不同的输入集合列表
+            optimization_level: 优化级别
+
+        Returns:
+            比较分析结果，突出关键差异
+        """
+        results = []
+
+        # 设置优化级别
+        original_level = (self.minimal_mode, self.track_memory_access)
+        self.set_optimization_level(optimization_level)
+
+        try:
+            for i, inputs in enumerate(input_sets):
+                self.logger.info(f"执行测试用例 {i+1}/{len(input_sets)}")
+                result = self.emulate_algorithm(func_name, inputs, optimization_level)
+                result['input_index'] = i
+                result['inputs'] = inputs
+                results.append(result)
+
+        finally:
+            # 恢复原始设置
+            self.minimal_mode, self.track_memory_access = original_level
+
+        # 进行比较分析
+        comparison = self._analyze_execution_differences(results)
+
+        return {
+            'individual_results': results,
+            'comparative_analysis': comparison,
+            'summary': {
+                'total_tests': len(input_sets),
+                'successful_tests': len([r for r in results if r['stop_reason'] == 'completed']),
+                'optimization_level': optimization_level
+            }
+        }
+
+    def _analyze_execution_differences(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """分析执行差异 - 专注于重要变化"""
+        if len(results) < 2:
+            return {'error': 'Need at least 2 executions to compare'}
+
+        analysis = {
+            'execution_stats_variance': {},
+            'algorithm_behavior_comparison': {},
+            'divergence_analysis': {},
+            'input_sensitivity': {}
+        }
+
+        # 比较执行统计
+        step_counts = [r['execution_stats']['steps_executed'] for r in results]
+        trace_counts = [r['execution_stats']['trace_entries'] for r in results]
+
+        analysis['execution_stats_variance'] = {
+            'step_count_range': (min(step_counts), max(step_counts)),
+            'step_count_variance': max(step_counts) - min(step_counts),
+            'trace_efficiency': {
+                'min_compression': min(trace_counts[i] / step_counts[i] if step_counts[i] > 0 else 0
+                                     for i in range(len(results))),
+                'max_compression': max(trace_counts[i] / step_counts[i] if step_counts[i] > 0 else 0
+                                     for i in range(len(results)))
+            }
+        }
+
+        # 比较算法行为
+        if all('algorithm_analysis' in r for r in results):
+            crypto_counts = []
+            loop_counts = []
+
+            for result in results:
+                analysis_data = result['algorithm_analysis']
+                crypto_counts.append(len(analysis_data.get('crypto_indicators', [])))
+                loop_counts.append(len(analysis_data.get('loop_patterns', [])))
+
+            analysis['algorithm_behavior_comparison'] = {
+                'crypto_operations_variance': {
+                    'range': (min(crypto_counts), max(crypto_counts)),
+                    'consistent': len(set(crypto_counts)) == 1
+                },
+                'loop_behavior_variance': {
+                    'range': (min(loop_counts), max(loop_counts)),
+                    'consistent': len(set(loop_counts)) == 1
+                }
+            }
+
+        # 分析输入敏感性
+        final_states = []
+        for result in results:
+            if 'final_state' in result:
+                final_states.append({
+                    'register_changes': len(result['final_state'].get('register_changes', {})),
+                    'memory_changes': len(result['final_state'].get('memory_changes', {}))
+                })
+
+        if final_states:
+            reg_changes = [fs['register_changes'] for fs in final_states]
+            mem_changes = [fs['memory_changes'] for fs in final_states]
+
+            analysis['input_sensitivity'] = {
+                'register_sensitivity': {
+                    'range': (min(reg_changes), max(reg_changes)),
+                    'variance': max(reg_changes) - min(reg_changes)
+                },
+                'memory_sensitivity': {
+                    'range': (min(mem_changes), max(mem_changes)),
+                    'variance': max(mem_changes) - min(mem_changes)
+                }
+            }
+
+        return analysis
+
+    def export_for_llm_analysis(self, result: Dict[str, Any],
+                               include_raw_trace: bool = False) -> Dict[str, Any]:
+        """
+        导出专为 LLM 分析优化的数据格式
+
+        Args:
+            result: 模拟结果
+            include_raw_trace: 是否包含原始追踪（通常不需要）
+
+        Returns:
+            LLM 友好的分析数据
+        """
+        export_data = {
+            'execution_summary': {
+                'total_steps': result['execution_stats']['steps_executed'],
+                'traced_steps': result['execution_stats']['trace_entries'],
+                'compression_achieved': result['execution_stats'].get('compression_ratio', 'N/A'),
+                'stop_reason': result['stop_reason']
+            },
+            'final_changes': result.get('final_state', {}),
+            'algorithm_insights': result.get('algorithm_analysis', {}),
+            'execution_metadata': {
+                'unique_registers_modified': result['execution_stats'].get('unique_registers_modified', 0),
+                'unique_memory_modified': result['execution_stats'].get('unique_memory_modified', 0),
+                'total_register_changes': result['execution_stats'].get('total_register_changes', 0),
+                'total_memory_changes': result['execution_stats'].get('total_memory_changes', 0)
+            }
+        }
+
+        # 只在明确请求时包含原始追踪
+        if include_raw_trace and 'execution_trace' in result:
+            export_data['execution_trace_summary'] = [
+                {
+                    'step': s.step_number,
+                    'pc': f"0x{s.pc:x}",
+                    'instruction_type': s.instruction_type,
+                    'changes': {
+                        'registers': len(s.register_changes),
+                        'memory': len(s.memory_changes)
+                    }
+                }
+                for s in result['execution_trace'][:50]  # 只取前50步以限制大小
+            ]
+
+        return export_data
+
     def set_logging_level(self, level):
-        """Set logging level for debugging."""
+        """设置日志级别"""
         self.logger.setLevel(level)
 
 
-# Advanced usage examples
+# 优化使用示例
 if __name__ == "__main__":
     import r2pipe
     import logging
@@ -816,3 +1264,58 @@ if __name__ == "__main__":
     print("- Custom external function handling")
     print("- Detailed memory access pattern tracking")
     print("- Crypto-operation detection and loop analysis")
+
+    print("=== 优化的 ESIL 模拟器示例 ===")
+
+    print("\n1. 最小模式分析 - 只追踪关键变化")
+    emulator.set_optimization_level("minimal")
+
+    result1 = emulator.emulate_algorithm(
+        func_name="sym.encrypt_data",
+        inputs={
+            "data": b"AAAAAAAAAAAAAAAA",
+            "key": b"1234567890123456",
+            "length": 16
+        }
+    )
+
+    # 导出 LLM 友好格式
+    llm_data = emulator.export_for_llm_analysis(result1)
+    print(f"压缩比: {llm_data['execution_summary']['compression_achieved']}")
+    print(f"最终状态变化: {len(llm_data['final_changes'].get('register_changes', {}))} 寄存器, "
+          f"{len(llm_data['final_changes'].get('memory_changes', {}))} 内存位置")
+
+    print("\n2. 差异分析 - 比较不同输入")
+    test_inputs = [
+        {"data": b"AAAAAAAAAAAAAAAA", "key": b"key1111111111111"},
+        {"data": b"BBBBBBBBBBBBBBBB", "key": b"key1111111111111"},
+        {"data": b"AAAAAAAAAAAAAAAA", "key": b"key2222222222222"},
+    ]
+
+    comparison = emulator.compare_executions_optimized("sym.encrypt_data", test_inputs)
+
+    comp_analysis = comparison['comparative_analysis']
+    print(f"步数变化范围: {comp_analysis['execution_stats_variance']['step_count_range']}")
+    print(f"算法行为一致性: {comp_analysis.get('algorithm_behavior_comparison', {})}")
+
+    print("\n3. 详细模式 - 用于深入分析")
+    emulator.set_optimization_level("detailed")
+
+    result3 = emulator.emulate_region(
+        start_addr="sym.complex_function",
+        register_inputs={"rdi": 0x10000},
+        memory_inputs={0x10000: b"detailed_analysis_input\x00"}
+    )
+
+    if 'algorithm_analysis' in result3:
+        analysis = result3['algorithm_analysis']
+        print(f"执行热点: {len(analysis.get('execution_hotspots', []))}")
+        print(f"内存访问模式: {analysis.get('memory_access_patterns', {})}")
+
+    print("\n=== 优化效果总结 ===")
+    print("✓ 只追踪实际变化，消除冗余数据")
+    print("✓ 智能过滤无关紧要的寄存器和内存")
+    print("✓ 提供多级优化选项（minimal/normal/detailed）")
+    print("✓ LLM 友好的数据导出格式")
+    print("✓ 专注于算法分析的洞察")
+    print("✓ 大幅减少需要传输给 LLM 的数据量")
