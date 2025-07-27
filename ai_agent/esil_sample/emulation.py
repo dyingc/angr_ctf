@@ -448,24 +448,23 @@ class ESILEmulator:
         return False
 
     def _get_current_registers(self) -> Dict[str, int]:
-        """获取当前寄存器状态"""
+        """获取当前寄存器状态 - 使用JSON输出优化版本"""
         try:
-            reg_output = self.r2.cmd("aer").strip()
-            registers = {}
+            # 使用 aerj 获取 JSON 格式寄存器数据，避免字符串解析
+            registers = self.r2.cmdj("aerj")
 
-            for line in reg_output.split('\n'):
-                if '=' in line:
-                    parts = line.split('=', 1)
-                    if len(parts) == 2:
-                        reg_name = parts[0].strip()
-                        reg_value = parts[1].strip()
-                        try:
-                            # 过滤无意义的寄存器（在最小模式下）
-                            if self.minimal_mode and self._is_insignificant_register(reg_name):
-                                continue
-                            registers[reg_name] = int(reg_value, 16)
-                        except ValueError:
-                            registers[reg_name] = 0
+            if not isinstance(registers, dict):
+                self.logger.warning("aerj 返回了非字典类型数据")
+                return {}
+
+            # 在最小模式下过滤无意义的寄存器
+            if self.minimal_mode:
+                # 创建过滤后的字典，只保留重要寄存器
+                filtered_registers = {
+                    name: value for name, value in registers.items()
+                    if not self._is_insignificant_register(name)
+                }
+                return filtered_registers
 
             return registers
         except Exception as e:
@@ -490,12 +489,13 @@ class ESILEmulator:
             registers = self._get_current_registers()
 
             # 追踪栈区域（更小的窗口）
-            esp = registers.get('esp', registers.get('rsp', 0))
-            if esp:
+            sp_reg = self._get_stack_config()["sp_reg"]
+            sp_reg_val = registers.get(sp_reg, 0)
+            if sp_reg_val:
                 try:
-                    # 只追踪栈顶附近的 128 字节而不是 256
-                    stack_hex = self.r2.cmd(f"px 128 @ {esp-64}")
-                    memory.update(self._parse_hex_dump(stack_hex, esp-64))
+                    # 追踪栈顶附近共 256 字节
+                    stack_hex = self.r2.cmd(f"px 256 @ {sp_reg_val-128}")
+                    memory.update(self._parse_hex_dump(stack_hex, sp_reg_val-128))
                 except:
                     pass
 
@@ -537,8 +537,9 @@ class ESILEmulator:
                     parts = line.split()
                     if len(parts) >= 2:
                         addr = int(parts[0], 16)
-                        # 只取前4个字节对以减少数据量
-                        hex_bytes = ' '.join(parts[1:5])
+                        # 提取所有 Hex 数据
+                        valid_parts = [p for p in parts if all(c in '0123456789abcdefABCDEF' for c in p)]
+                        hex_bytes = ' '.join(valid_parts[1:])  # 跳过地址部分
                         try:
                             data = bytes.fromhex(hex_bytes.replace(' ', ''))
                             if data != b'\x00' * len(data):  # 跳过全零内存
