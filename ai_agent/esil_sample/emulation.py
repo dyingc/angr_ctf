@@ -17,6 +17,7 @@ class StopConditionType(Enum):
     """模拟终止条件类型（全中文注释）"""
     ADDRESS = "address"        # 到达指定地址后停止
     FUNCTION_END = "function_end"  # 到达函数结束处停止
+    BASIC_BLOCK_END = "basic_block_end"  # 到达基本块结束处停止
     INSTRUCTION_COUNT = "instruction_count"  # 执行指定条数后停止
     EXPRESSION = "expression"  # ESIL 条件表达式为真则停止
     MANUAL = "manual"         # 需手动控制停止
@@ -586,50 +587,55 @@ class ESILEmulator:
         return False
 
     def _determine_stop_condition(self, start_addr: Union[str, int],
-                                 end_addr: Optional[Union[str, int]]) -> Tuple[StopConditionType, Any]:
+                                end_addr: Optional[Union[str, int]]) -> Tuple[StopConditionType, Any]:
         """
         智能确定模拟停止条件
 
         Args:
-            start_addr: 起始地址（符号名或整数地址）
-            end_addr: 结束地址（可选）
+            start_addr: 起始地址、符号名（如：main）或表达式（如：main+0x15）
+            end_addr: 结束地址（符号名、表达式或整数地址）（可选）
 
         Returns:
             (StopConditionType, 具体条件) 元组
-            优先级依次为：
-            1. 若提供 end_addr，直接停止于该地址
-            2. 若为符号名（如 sym.），自动解析对应函数的终止边界
-            3. 若能识别起始地址对应的函数或基本块，采用其 end offset
-            4. 若无信息，降级为手动模式
 
-        适用于自动检测函数范围的模拟终止，提升用例复现和调试效率。
+        停止条件确定逻辑（按优先级顺序）：
+            1. 若提供 end_addr，直接停止于该地址
+            2. 若起始地址位于已识别函数内，使用函数结束地址作为停止条件
+            3. 若起始地址不在函数内但存在基本块信息，使用基本块结束地址
+            （适用于：未被识别为函数的代码片段、孤立基本块、函数分析失败等情况）
+            4. 若以上条件均不满足，降级为手动模式
+
+        Note:
+            基本块回退机制处理以下场景：
+            - 手动跳转到的代码片段（非函数入口点）
+            - 被混淆或反调试技术影响的函数
+            - 动态生成代码或内联汇编片段
+            - 位于函数间隙的独立代码块
+            - 不完整的函数分析结果
+
+        适用于自动检测函数/代码块范围的模拟终止，提升用例复现和调试效率。
+        在复杂二进制分析中提供更强的容错性。
         """
         if end_addr is not None:
             return (StopConditionType.ADDRESS, self._resolve_address(end_addr))
 
         resolved_start = self._resolve_address(start_addr)
 
-        if isinstance(start_addr, str) and start_addr.startswith("sym."):
-            func_info = self.r2.cmdj(f"afij @ {start_addr}")
-            if func_info and len(func_info) > 0:
-                func_end = func_info[0]["offset"] + func_info[0]["size"]
-                return (StopConditionType.FUNCTION_END, func_end)
-
-        func_info = self.r2.cmdj(f"afij @ {resolved_start}")
+        func_info = self.r2.cmdj(f"afij @ {resolved_start}") # 尝试通过地址、符号名或表达式获取函数信息
         if func_info and len(func_info) > 0:
-            func_end = func_info[0]["offset"] + func_info[0]["size"]
+            func_end = func_info[0]["addr"] + func_info[0]["size"]
             return (StopConditionType.FUNCTION_END, func_end)
 
-        bb_info = self.r2.cmdj(f"abj @ {resolved_start}")
+        bb_info = self.r2.cmdj(f"abj @ {resolved_start}") # 尝试获取基本块信息
         if bb_info and len(bb_info) > 0:
             bb_end = bb_info[0]["addr"] + bb_info[0]["size"]
-            return (StopConditionType.ADDRESS, bb_end)
+            return (StopConditionType.BASIC_BLOCK_END, bb_end)
 
         return (StopConditionType.MANUAL, None)
 
     def _resolve_address(self, addr: Union[str, int]) -> int:
         """
-        从符号名、十六进制/十进制字符串或整数解析为内存地址
+        从符号名、表达式、十六进制/十进制字符串或整数解析为内存地址
 
         Args:
             addr: 地址参数——可为整数、0x前缀的字符串或符号名
@@ -638,21 +644,13 @@ class ESILEmulator:
             解析后的绝对地址（int）
 
         示例：
-            - 0x1234       → 0x1234
+            - "0x1234"     → 0x1234
             - "main"       → 通过 radare2 求值获得符号地址
+            - "main + 10"  → 通过 radare2 求值获得表达式地址
             - 5678         → 5678
-
-        支持自动容错，可直接关联 r2 的 "?v" 求值接口。
         """
-        if isinstance(addr, int):
-            return addr
-        if isinstance(addr, str):
-            if addr.startswith("0x"):
-                return int(addr, 16)
-            else:
-                result = self.r2.cmd(f"?v {addr}").strip()
-                return int(result, 16) if result else 0
-        return 0
+        result = self.r2.cmd(f"?v {addr}").strip()
+        return int(result, 16) if result else 0
 
     def _setup_inputs(self, register_inputs: Optional[Dict],
                      stack_inputs: Optional[Dict],
@@ -1212,8 +1210,8 @@ if __name__ == "__main__":
 
     # Analyze specific code block after user input
     result1 = emulator.emulate_region(
-        start_addr=after_scanf.get('addr', 0x0),  # After scanf (str wzr, [var_10h])
-        end_addr=before_printf.get('addr', 0x0),    # Before output (add x0, x0, 0x6b7)
+        start_addr='main', # after_scanf.get('addr', 0x0),  # After scanf (str wzr, [var_10h])
+        end_addr=None, # before_printf.get('addr', 0x0),    # Before output (add x0, x0, 0x6b7)
         register_inputs={},
         stack_inputs={-0x17: b"AAAAAAAA\x00"},
         memory_inputs={0x10000: b"secret_data_here"},
