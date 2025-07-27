@@ -75,7 +75,8 @@ class ESILEmulator:
         self.r2.cmd("e io.cache=true")         # 启用内存缓存，提升读写效率
         self.r2.cmd("e asm.esil=false")        # 默认不显示 ESIL 表达式，避免控制台噪声
         self.r2.cmd("e asm.bytes=true")        # 显示汇编指令字节
-        self.r2.cmd("e asm.comments=false")    # 关闭自动注释
+        self.r2.cmd("e asm.comments=true")    # 启用自动注释
+        self.r2.cmd("e asm.lines=false")     # 禁用控制流图（CFG）的可视化表示，避免干扰LLM分析（只对人工调试有用）
         # 启用更详细的 ESIL 跟踪统计
         self.r2.cmd("e esil.stats=true")
 
@@ -107,7 +108,7 @@ class ESILEmulator:
                       skip_external: bool = True,
                       max_steps: int = 10000) -> Dict[str, Any]:
         """
-        优化的区域模拟器 - 只返回变化数据
+        区域模拟器 - 只返回变化数据
         Args:
             start_addr: 起始地址（可以是函数名如 "sym.encrypt" 或十六进制地址）
             end_addr: 结束地址（None 表示自动检测函数/块边界）
@@ -142,23 +143,77 @@ class ESILEmulator:
         return result
 
     def _initialize_vm(self):
-        """初始化 ESIL 虚拟机，保证寄存器/栈状态清零"""
-        self.r2.cmd("aei-")                       # 若已有模拟，先清理之
-        self.r2.cmd("aei")                        # 初始化 ESIL 虚拟机
-        self.r2.cmd("aeim-")                      # 清空已有栈
-        self.r2.cmd("aeim 0x2000 0xffff")         # 初始化 64KB 栈段
-        self.r2.cmd("ar0")                        # 寄存器全清零，保证无隔离问题
+        """初始化 ESIL 虚拟机，保证寄存器/栈状态清零，支持跨平台架构"""
 
-        # 设置架构相关寄存器默认值（如基址指针等），否则部分 SSA 函数跟踪会出错
+        # 清理现有状态
+        self.r2.cmd("aei-")
+        self.r2.cmd("aei")
+        self.r2.cmd("aeim-")
+
+        # 获取架构信息
         arch_info = self.r2.cmdj("ij")
-        if arch_info and "bin" in arch_info:
-            bits = arch_info["bin"].get("bits", 64)
-            if bits == 64:
-                self.r2.cmd("aer rsp=0xbffffff0")
-                self.r2.cmd("aer rbp=0xbffffff0")
-            else:
-                self.r2.cmd("aer esp=0xbffffff0")
-                self.r2.cmd("aer ebp=0xbffffff0")
+        if not arch_info or "bin" not in arch_info:
+            self._initialize_default_stack()
+            self.r2.cmd("ar0")
+            return
+
+        # 根据架构初始化栈 - aeim会自动设置所有相关寄存器
+        stack_config = self._get_stack_config()
+        self._initialize_stack(stack_config)
+
+    def _get_stack_config(self) -> Dict[str, str]:
+        """根据架构和位数获取栈配置"""
+
+        # 获取架构信息
+        arch_info = self.r2.cmdj("ij")
+
+        bin_info = arch_info["bin"]
+        arch = bin_info.get("arch", "Unknown").lower()
+        bits = bin_info.get("bits", 64)
+
+        stack_configs = {
+            # x86架构配置
+            ("x86", 32): {
+                "base_addr": "0x80000000",  # x86_32内核空间边界下方
+                "size": "0x10000",          # 64KB栈
+                "sp_reg": "esp",
+                "bp_reg": "ebp"
+            },
+            ("x86", 64): {
+                "base_addr": "0x700000000000",  # x86_64用户空间高地址
+                "size": "0x20000",              # 128KB栈
+                "sp_reg": "rsp",
+                "bp_reg": "rbp"
+            },
+
+            # ARM64架构配置
+            ("arm", 64): {
+                "base_addr": "0x400000000000",  # ARM64用户空间
+                "size": "0x20000",              # 128KB栈
+                "sp_reg": "sp",
+                "bp_reg": "x29"                 # ARM64使用x29作为frame pointer
+            }
+        }
+
+        # 获取架构特定配置，如果不存在则使用默认配置
+        return stack_configs.get((arch, bits), {
+            "base_addr": "0x80000000",
+            "size": "0x10000",
+            "sp_reg": "rsp",
+            "bp_reg": "rbp"
+        })
+
+    def _initialize_stack(self, config):
+        """使用给定配置初始化栈"""
+        base_addr = config["base_addr"]
+        size = config["size"]
+
+        # aeim会自动设置sp、fp等栈相关寄存器为栈中点
+        self.r2.cmd(f"aeim {base_addr} {size}")
+
+    def _initialize_default_stack(self):
+        """当无法获取架构信息时使用的默认栈初始化"""
+        self.r2.cmd("aeim 0x2000 0xffff")
 
     def _establish_baseline(self):
         """建立当前模拟快照的变化基准（中文注释）"""
@@ -629,9 +684,11 @@ class ESILEmulator:
                     self.logger.debug(f"设置 {reg} = 0x{value:x}")
 
         if stack_inputs:
+            stack_config = self._get_stack_config()
+            sp_reg = stack_config["sp_reg"]
             for offset, value in stack_inputs.items():
-                esp_val = int(self.r2.cmd("aer esp").strip().split()[-1], 16)
-                target_addr = esp_val + offset
+                sp_reg_val = self.r2.cmdj(f"aerj")[sp_reg]
+                target_addr = sp_reg_val + offset
 
                 if isinstance(value, bytes):
                     self.r2.cmd(f"wx {value.hex()} @ 0x{target_addr:x}")
@@ -1139,16 +1196,25 @@ if __name__ == "__main__":
     # Setup logging
     logging.basicConfig(level=logging.INFO)
 
-    r2 = r2pipe.open("./binary")
+    r2 = r2pipe.open("./00_angr_find/00_angr_find_arm")
     emulator = ESILEmulator(r2)
 
     print("=== Example 1: Code Block Analysis ===")
+    main_addr = r2.cmdj("aaa; afij @ main")[0]['addr']
+    ops = r2.cmdj(f"pdfj @ {main_addr}").get('ops', [])
+    scanf_funcs = [(i, cmd) for i, cmd in enumerate(ops) if cmd.get('type', '') == 'call' and '.scanf' in cmd.get('disasm', '')]
+    first_scanf = scanf_funcs[0][1]
+    after_scanf = ops[scanf_funcs[0][0] + 1] if len(ops) > scanf_funcs[0][0] else None
+    printf_funcs = [(i, cmd) for i, cmd in enumerate(ops) if cmd.get('type', '') == 'call' and '.printf' in cmd.get('disasm', '') and i > scanf_funcs[0][0]]
+    first_printf = printf_funcs[0][1] if printf_funcs else None
+    before_printf = ops[printf_funcs[0][0] - 1] if scanf_funcs[0][0] > 0 else None
+
     # Analyze specific code block after user input
     result1 = emulator.emulate_region(
-        start_addr=0x08048460,  # After scanf
-        end_addr=0x080484A0,    # Before output
-        register_inputs={"eax": 0x1234},
-        stack_inputs={-0x10: b"password123\x00"},
+        start_addr=after_scanf.get('addr', 0x0),  # After scanf (str wzr, [var_10h])
+        end_addr=before_printf.get('addr', 0x0),    # Before output (add x0, x0, 0x6b7)
+        register_inputs={},
+        stack_inputs={-0x17: b"AAAAAAAA\x00"},
         memory_inputs={0x10000: b"secret_data_here"},
         skip_external=True
     )
@@ -1304,7 +1370,7 @@ if __name__ == "__main__":
     result3 = emulator.emulate_region(
         start_addr="sym.complex_function",
         register_inputs={"rdi": 0x10000},
-        memory_inputs={0x10000: b"detailed_analysis_input\x00"}
+        memory_inputs={0x10000000: b"detailed_analysis_input\x00"}
     )
 
     if 'algorithm_analysis' in result3:
