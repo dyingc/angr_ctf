@@ -65,11 +65,89 @@ class ESILEmulator:
         self.all_seen_registers = set()     # 所有出现过的寄存器名
         self.all_seen_memory = set()        # 所有出现过的内存地址
 
+        # 初始化一些环境、架构相关设置
+        self.arch_info = self._get_arch_info()
+
         # 优化选项开关
         self.track_memory_access = False    # 是否追踪内存被访问但未修改的情况
         self.minimal_mode = True            # 最小变化模式，仅记录关键性变化
 
         self.setup_environment()            # 初始化 ESIL 环境配置
+
+    def _get_arch_info(self) -> Dict[str, str]:
+        """
+        使用Radare2的iIj命令获取当前架构的寄存器映射
+        返回: 寄存器映射字典
+        """
+        # 获取二进制文件信息
+        info = self.r2.cmdj("iIj")
+        arch = info.get('arch', 'unknown').lower()  # 获取架构名
+        bits = info.get('bits', 64)                 # 获取位数，默认为64位
+        arch_info = {k: v.lower() if isinstance(v, str) else v for k, v in info.items()}
+
+        # 根据架构和位数返回寄存器映射
+        if arch == "x86":
+            if bits == 64:
+                arch_info["registers"] = {
+                    "base_reg_name": "rbp",
+                    "stack_reg_name": "rsp",
+                    "link_reg_name": None,
+                    "instruction_reg_name": "rip",
+                    "accumulator_reg_name": "rax",
+                    "counter_reg_name": "rcx",
+                    "data_reg_name": "rdx",
+                    "base_index_reg_name": "rbx",
+                    "source_index_reg_name": "rsi",
+                    "dest_index_reg_name": "rdi",
+                    "arg_regs": ["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
+                    "caller_saved": ["rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"],
+                    "callee_saved": ["rbx", "rbp", "r12", "r13", "r14", "r15"]
+                }
+            else:  # 32-bit
+                arch_info["registers"] = {
+                    "base_reg_name": "ebp",
+                    "stack_reg_name": "esp",
+                    "link_reg_name": None,
+                    "instruction_reg_name": "eip",
+                    "accumulator_reg_name": "eax",
+                    "counter_reg_name": "ecx",
+                    "data_reg_name": "edx",
+                    "base_index_reg_name": "ebx",
+                    "source_index_reg_name": "esi",
+                    "dest_index_reg_name": "edi",
+                    "arg_regs": [],
+                    "caller_saved": ["eax", "ecx", "edx"],
+                    "callee_saved": ["ebx", "esi", "edi", "ebp"]
+                }
+
+        elif arch == "arm" and bits == 64:
+            arch_info["registers"] = {
+                "base_reg_name": "x29",      # 帧指针 (FP)
+                "stack_reg_name": "sp",      # 栈指针
+                "link_reg_name": "x30",      # 链接寄存器 (LR)
+                "instruction_reg_name": "pc", # 程序计数器
+                "zero_reg_name": "xzr",      # 零寄存器
+                "arg_regs": ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"],
+                "return_reg_name": "x0",
+                "caller_saved": [f"x{i}" for i in range(0, 18)],
+                "callee_saved": [f"x{i}" for i in range(19, 29)],
+                "temp_regs": [f"x{i}" for i in range(9, 16)]
+            }
+
+        elif arch == "arm" and bits == 32:
+            arch_info["registers"] = {
+                "base_reg_name": "r11",      # 帧指针
+                "stack_reg_name": "sp",      # 栈指针 (r13)
+                "link_reg_name": "lr",       # 链接寄存器 (r14)
+                "instruction_reg_name": "pc", # 程序计数器 (r15)
+                "arg_regs": ["r0", "r1", "r2", "r3"],
+                "return_reg_name": "r0",
+                "caller_saved": ["r0", "r1", "r2", "r3", "r12"],
+                "callee_saved": ["r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11"]
+            }
+        else:
+            raise ValueError(f"不支持的架构: {arch} {bits}位")
+        return arch_info
 
     def setup_environment(self):
         """设置 ESIL 优化模拟环境（全中文注释）"""
@@ -554,14 +632,11 @@ class ESILEmulator:
     # 保留原有的其他方法但添加优化
     def _get_current_pc(self) -> int:
         """获取当前程序计数器值"""
-        pc_output = self.r2.cmd("aer eip").strip()
+        pc_reg = self.arch_info["registers"]["instruction_reg_name"]
+        pc_output = self.r2.cmdj("aerj")[pc_reg]
         if not pc_output:
-            pc_output = self.r2.cmd("aer rip").strip()
-
-        try:
-            return int(pc_output.split()[-1], 16)
-        except (ValueError, IndexError):
             return 0
+        return pc_output
 
     def _should_stop(self, current_pc: int, stop_condition: Tuple[StopConditionType, Any]) -> bool:
         """
@@ -578,7 +653,7 @@ class ESILEmulator:
 
         if condition_type == StopConditionType.ADDRESS and condition_value is not None:
             return current_pc >= condition_value
-        elif condition_type == StopConditionType.FUNCTION_END and condition_value is not None:
+        elif condition_type in [StopConditionType.FUNCTION_END, StopConditionType.BASIC_BLOCK_END] and condition_value is not None:
             return current_pc >= condition_value
         elif condition_type == StopConditionType.MANUAL:
             # For manual mode, continue until explicit stop
@@ -756,7 +831,8 @@ class ESILEmulator:
             # External library function
             func_name = self._extract_function_name(instruction, "sym.imp.")
             self._handle_external_call(func_name)
-            self.r2.cmd("aeso")  # Step over
+            self.r2.cmd("aess")  # Step skip
+            self.logger.debug(f"跳过外部调用: {func_name}")
             return True
         elif "sym." in instruction:
             # Internal function - decision point
@@ -801,22 +877,63 @@ class ESILEmulator:
             '__stack_chk_fail', '_init', '_fini', '__libc_start_main',
             '__do_global_dtors_aux', 'deregister_tm_clones', 'register_tm_clones'
         }
-        return func_name not in skip_functions
+        return func_name not in skip_functions and not func_name.startswith("__")
 
     def _handle_external_call(self, func_name: str):
         """处理外部函数调用（支持自定义钩子/自动模拟返回值）"""
+        regs = self.arch_info["registers"]
+        accumulator_reg = regs.get("accumulator_reg_name", regs.get('return_reg_name', 'x0'))
         if func_name in self.external_handlers:
             self.external_handlers[func_name]()  # 调用自定义模拟处理器
         else:
             # 常用库函数的默认模拟（无需副作用，仅设置返回值，方便静态分析）
             default_handlers = {
-                'printf': lambda: self.r2.cmd("aer rax=10"),
-                'scanf': lambda: self.r2.cmd("aer rax=1"),
-                'malloc': lambda: self.r2.cmd("aer rax=0x20000"),
-                'strlen': lambda: self.r2.cmd("aer rax=8"),
-                'strcmp': lambda: self.r2.cmd("aer rax=0"),
-                'memcpy': lambda: self.r2.cmd("aer rax=" + self.r2.cmd("aer rdi").strip().split()[-1]),
+                'printf': lambda: self.r2.cmd(f"aer {accumulator_reg}=10"), # 注意，考虑到格式化字符串的存在，计算准确的字符串长度并不简单，所以，直接返回一个虚拟的打印输出长度10
+                'scanf': lambda: self.r2.cmd(f"aer {accumulator_reg}=1"),
+                # 字符串处理函数
+                'strlen': lambda: self.r2.cmd(f"aer {accumulator_reg}=8"),
+                'strcmp': lambda: self.r2.cmd(f"aer {accumulator_reg}=0"),
+                'strcpy': lambda: self.r2.cmd(f"aer {accumulator_reg}=" +
+                                            str(self.r2.cmdj("aerj").get(regs['arg_regs'][0], "0x0"))),
+                'strcat': lambda: self.r2.cmd(f"aer {accumulator_reg}=" +
+                                            str(self.r2.cmdj("aerj").get(regs['arg_regs'][0], "0x0"))),
+                'strchr': lambda: self.r2.cmd(f"aer {accumulator_reg}=0x401234"),  # 假设找到
+                'strstr': lambda: self.r2.cmd(f"aer {accumulator_reg}=0x401234"),  # 假设找到
+                'strncmp': lambda: self.r2.cmd(f"aer {accumulator_reg}=0"),
+                'strdup': lambda: self.r2.cmd(f"aer {accumulator_reg}=0x20000"),
+                # 常见内存操作函数
+                'memmove': lambda: self.r2.cmd(f"aer {accumulator_reg}=" +
+                                            str(self.r2.cmdj("aerj").get(regs['arg_regs'][0], "0x0"))),
+                'memset': lambda: self.r2.cmd(f"aer {accumulator_reg}=" +
+                            str(self.r2.cmdj("aerj").get(regs['arg_regs'][0], "0x0"))),
+                'malloc': lambda: self.r2.cmd(f"aer {accumulator_reg}=0x20000"),
+                'memcpy': lambda: self.r2.cmd(f"aer {accumulator_reg}=" +
+                             self.r2.cmdj("aerj").get(regs['arg_regs'][0])),
+                'bzero': lambda: None,  # void返回
+                'calloc': lambda: self.r2.cmd(f"aer {accumulator_reg}=0x20000"),
+                'realloc': lambda: self.r2.cmd(f"aer {accumulator_reg}=" +
+                                            str(self.r2.cmdj("aerj").get(regs['arg_regs'][0], "0x20000"))),
+                'alloca': lambda: self.r2.cmd(f"aer {accumulator_reg}=0x20000"),
                 'free': lambda: None,  # free 无副作用
+                # 文件IO
+                'fopen': lambda: self.r2.cmd(f"aer {accumulator_reg}=0x600000"),   # 假设FILE*
+                'fclose': lambda: self.r2.cmd(f"aer {accumulator_reg}=0"),
+                'fread': lambda: self.r2.cmd(f"aer {accumulator_reg}=1024"),       # 假设读取字节数
+                'fwrite': lambda: self.r2.cmd(f"aer {accumulator_reg}=1024"),
+                'fprintf': lambda: self.r2.cmd(f"aer {accumulator_reg}=10"),
+                'fgets': lambda: self.r2.cmd(f"aer {accumulator_reg}=" +
+                                            str(self.r2.cmdj("aerj").get(regs['arg_regs'][0], "0x0"))),
+                # 数学函数
+                'abs': lambda: self.r2.cmd(f"aer {accumulator_reg}=42"),
+                'pow': lambda: self.r2.cmd(f"aer {accumulator_reg}=100"),
+                'sqrt': lambda: self.r2.cmd(f"aer {accumulator_reg}=10"),
+                'rand': lambda: self.r2.cmd(f"aer {accumulator_reg}=0x1337"),
+                'srand': lambda: None,  # 无返回值
+                # 系统调用
+                'getpid': lambda: self.r2.cmd(f"aer {accumulator_reg}=1234"),
+                'time': lambda: self.r2.cmd(f"aer {accumulator_reg}=1640995200"),  # Unix时间戳
+                'sleep': lambda: self.r2.cmd(f"aer {accumulator_reg}=0"),
+                'exit': lambda: None,  # 程序终止
             }
 
             if func_name in default_handlers:
@@ -824,7 +941,7 @@ class ESILEmulator:
                 self.logger.debug(f"模拟 {func_name}")
             else:
                 # 任何无法识别的函数一律返回0，无副作用
-                self.r2.cmd("aer rax=0")
+                self.r2.cmd(f"aer {accumulator_reg}=0")
                 self.logger.warning(f"未知外部函数: {func_name}")
 
     def add_external_handler(self, func_name: str, handler_func):
