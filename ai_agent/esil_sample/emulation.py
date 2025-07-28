@@ -858,6 +858,7 @@ class ESILEmulator:
 
     def _handle_syscall_instruction(self, instruction: str) -> bool:
         """处理系统调用和中断（如 int 0x80，syscall 指令，后续可扩展模拟常用系统调用行为）"""
+        """可参考 syscall.py 的实现"""
         result = self.r2.cmd("aes")
         return "ESIL BREAK" not in result
 
