@@ -345,7 +345,7 @@ class ESILEmulator:
                     break
 
                 instr = instr_info[0]
-                instruction_text = instr.get("opcode", "unknown")
+                instruction_text = instr.get("disasm", "unknown")
                 instruction_type = instr.get("type", "unknown")
                 opcode_bytes = instr.get("bytes", "")
                 esil_expr = instr.get("esil", "")
@@ -521,7 +521,10 @@ class ESILEmulator:
     def _is_significant_step(self, snapshot: OptimizedExecutionSnapshot) -> bool:
         """判断是否为重要步骤 - 决定是否包含在追踪中"""
 
-        # 总是包含有变化的步骤
+        # 总是包含有变化的步骤除非只有PC寄存器变化
+        pc_reg = self.arch_info["registers"]["instruction_reg_name"]
+        if not snapshot.memory_changes and len(snapshot.register_changes) == 1 and pc_reg in snapshot.register_changes:
+            return False
         if snapshot.register_changes or snapshot.memory_changes:
             return True
 
