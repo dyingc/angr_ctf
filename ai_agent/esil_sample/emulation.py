@@ -34,8 +34,8 @@ class OptimizedExecutionSnapshot:
     step_number: int                           # 步骤编号
 
     # 只记录有变化的数据（寄存器/内存）
-    register_changes: Dict[str, int]           # 本步变化的寄存器
-    memory_changes: Dict[int, bytes]           # 本步变化的内存
+    register_changes: Dict[str, Dict[str, int]]           # 本步变化的寄存器，包含上一次和这一次的值
+    memory_changes: Dict[int, Dict[str, bytes]]           # 本步变化的内存，包含上一次和这一次的值
 
     # 可选上下文，仅特殊情况下出现
     new_registers: Optional[Set[str]] = None   # 首次出现的寄存器
@@ -478,13 +478,19 @@ class ESILEmulator:
         # 检查修改的寄存器
         for reg, value in curr_regs.items():
             if reg not in prev_regs or prev_regs[reg] != value:
-                changes[reg] = value
+                changes[reg] = {
+                    "prev": prev_regs.get(reg, None),
+                    "curr": value
+                }
 
         # 在非最小模式下，检查消失的寄存器
         if not self.minimal_mode:
             for reg in prev_regs:
                 if reg not in curr_regs:
-                    changes[reg] = None  # 表示寄存器被清除
+                    changes[reg] = {
+                        "prev": prev_regs.get(reg, None),
+                        "curr": None  # 表示寄存器被清除
+                    }
 
         return changes
 
@@ -496,13 +502,19 @@ class ESILEmulator:
         # 检查修改的内存
         for addr, data in curr_mem.items():
             if addr not in prev_mem or prev_mem[addr] != data:
-                changes[addr] = data
+                changes[addr] = {
+                    "prev": prev_mem.get(addr, b''),
+                    "curr": data
+                }
 
         # 在非最小模式下，检查被清除的内存
         if not self.minimal_mode:
             for addr in prev_mem:
                 if addr not in curr_mem:
-                    changes[addr] = b''  # 表示内存被清除
+                    changes[addr] = {
+                        "prev": prev_mem.get(addr, b''),
+                        "curr": None  # 表示内存被清除
+                    }
 
         return changes
 
