@@ -185,7 +185,10 @@ class ESILEmulator:
                       stack_inputs: Optional[Dict[int, Union[bytes, int]]] = None,
                       memory_inputs: Optional[Dict[int, Union[bytes, int]]] = None,
                       skip_external: bool = True,
-                      max_steps: int = 10000) -> Dict[str, Any]:
+                      max_steps: int = 10000,
+                      stop_type: Optional[StopConditionType] = None,
+                      robust_function_exit: bool = False,
+                      robust_bb_exit: bool = False) -> Dict[str, Any]:
         """
         区域模拟器 - 只返回变化数据
         Args:
@@ -196,6 +199,9 @@ class ESILEmulator:
             memory_inputs: 内存数据 {0x10000: b"test_data", 0x20000: 0x12345678}
             skip_external: 是否自动跳过外部库函数
             max_steps: 最大步数以防止无限循环
+            stop_type: 显式指定停止条件类型
+            robust_function_exit: 是否使用函数的robust出口检测
+            robust_bb_exit: 是否使用基本块的robust出口检测
 
         Returns:
             Dict containing:
@@ -213,7 +219,7 @@ class ESILEmulator:
         self._establish_baseline()
 
         # 3. 确定停止条件
-        stop_condition = self._determine_stop_condition(start_addr, end_addr)
+        stop_condition = self._determine_stop_condition(start_addr, end_addr, stop_type, robust_function_exit, robust_bb_exit)
 
         # 4. 执行优化的监控
         result = self._execute_with_optimized_monitoring(
@@ -364,6 +370,16 @@ class ESILEmulator:
             if not step_successful:
                 stop_reason = "execution_failed"
                 break
+
+            # 获取执行后的下一个PC值
+            next_pc = self._get_current_pc()
+
+            # 检查函数/基本块出口列表停止条件
+            condition_type, condition_value = stop_condition
+            if condition_type in [StopConditionType.FUNCTION_END, StopConditionType.BASIC_BLOCK_END] and isinstance(condition_value, list):
+                if next_pc in condition_value:
+                    stop_reason = f"reached_{condition_type.value}"
+                    break
 
             # 捕获优化的执行快照
             snapshot = self._create_optimized_snapshot(
@@ -655,7 +671,7 @@ class ESILEmulator:
 
     def _should_stop(self, current_pc: int, stop_condition: Tuple[StopConditionType, Any]) -> bool:
         """
-        检查是否应该停止模拟
+        检查是否应该停止模拟（仅处理ADDRESS、MANUAL、INSTRUCTION_COUNT类型）
 
         Args:
             current_pc: 当前程序计数器值
@@ -668,25 +684,113 @@ class ESILEmulator:
 
         if condition_type == StopConditionType.ADDRESS and condition_value is not None:
             return current_pc >= condition_value
-        elif condition_type in [StopConditionType.FUNCTION_END, StopConditionType.BASIC_BLOCK_END] and condition_value is not None:
-            return current_pc >= condition_value
+        elif condition_type == StopConditionType.INSTRUCTION_COUNT and condition_value is not None:
+            # instruction count should be handled elsewhere, but included for completeness
+            return False
         elif condition_type == StopConditionType.MANUAL:
             # For manual mode, continue until explicit stop
+            return False
+        elif condition_type in [StopConditionType.FUNCTION_END, StopConditionType.BASIC_BLOCK_END]:
+            # These are handled in the execution loop by checking next_pc against exit list
             return False
 
         return False
 
+    def _determine_function_end(self, pc: int, robust: bool = False) -> Union[List[int], None]:
+        """
+        确定函数结束地址
+
+        Args:
+            pc: 当前程序计数器值
+            robust: 是否使用robust模式（收集所有外跳出口）
+
+        Returns:
+            返回包含所有相关地址的列表（包括函数尾和外跳出口）
+        """
+        info = self.r2.cmdj(f"afij @ {pc}")
+        if not info:
+            return None
+
+        f = info[0]
+        base = f["addr"]
+        size = f["size"]
+        upper = base + size
+
+        exits = [upper]  # 默认尾后一字节作兜底
+
+        if not robust:
+            return exits
+
+        # Robust模式：收集所有外跳出口
+        try:
+            bbs = self.r2.cmdj(f"afbj @ {base}")
+            for bb in bbs:
+                for k in ("jump", "fail"):
+                    tgt = bb.get(k)
+                    if tgt is not None and not (base <= tgt < upper):
+                        if tgt not in exits:
+                            exits.append(tgt)
+        except:
+            pass
+
+        return exits
+
+    def _determine_basic_block_end(self, pc: int, robust: bool = False) -> Union[List[int], None]:
+        """
+        确定基本块结束地址
+
+        Args:
+            pc: 当前程序计数器值
+            robust: 是否使用robust模式（收集所有外跳出口）
+
+        Returns:
+            返回包含所有相关地址的列表（包括块尾和外跳出口）
+        """
+        bb = self.r2.cmdj(f"abj @ {pc}")
+        if not bb or len(bb) == 0:
+            return None
+
+        bb_info = bb[0]
+        base = bb_info["addr"]
+        size = bb_info["size"]
+        upper = base + size
+
+        exits = [upper]  # 默认尾后一字节作兜底
+
+        if not robust:
+            return exits
+
+        # Robust模式：收集所有外跳出口
+        try:
+            # 收集 jump 和 fail 目标
+            for k in ("jump", "fail"):
+                tgt = bb_info.get(k)
+                if tgt is not None:
+                    # 检查是否在基本块范围内
+                    if not (base <= tgt < base + size):
+                        if tgt not in exits:
+                            exits.append(tgt)
+        except:
+            pass
+
+        return exits
+
     def _determine_stop_condition(self, start_addr: Union[str, int],
-                                end_addr: Optional[Union[str, int]]) -> Tuple[StopConditionType, Any]:
+                                end_addr: Optional[Union[str, int]],
+                                stop_type: Optional[StopConditionType] = None,
+                                robust_function_exit: bool = False,
+                                robust_bb_exit: bool = False) -> Tuple[StopConditionType, Any]:
         """
         智能确定模拟停止条件
 
         Args:
             start_addr: 起始地址、符号名（如：main）或表达式（如：main+0x15）
             end_addr: 结束地址（符号名、表达式或整数地址）（可选）
+            robust_function_exit: 是否使用函数的robust出口检测
+            robust_bb_exit: 是否使用基本块的robust出口检测
 
         Returns:
-            (StopConditionType, 具体条件) 元组
+            (StopConditionType, 具体条件) 元组（对于函数/基本块情况，具体条件为包含出口地址的列表）
 
         停止条件确定逻辑（按优先级顺序）：
             1. 若提供 end_addr，直接停止于该地址
@@ -712,14 +816,16 @@ class ESILEmulator:
         resolved_start = self._resolve_address(start_addr)
 
         func_info = self.r2.cmdj(f"afij @ {resolved_start}") # 尝试通过地址、符号名或表达式获取函数信息
-        if func_info and len(func_info) > 0:
-            func_end = func_info[0]["addr"] + func_info[0]["size"]
-            return (StopConditionType.FUNCTION_END, func_end)
+        if stop_type == StopConditionType.FUNCTION_END and func_info and len(func_info) > 0:
+            # 使用 _determine_function_end 方法来获取函数结束地址列表
+            func_end_list = self._determine_function_end(resolved_start, robust=robust_function_exit)
+            return (StopConditionType.FUNCTION_END, func_end_list if func_end_list else [])
 
         bb_info = self.r2.cmdj(f"abj @ {resolved_start}") # 尝试获取基本块信息
-        if bb_info and len(bb_info) > 0:
-            bb_end = bb_info[0]["addr"] + bb_info[0]["size"]
-            return (StopConditionType.BASIC_BLOCK_END, bb_end)
+        if stop_type == StopConditionType.BASIC_BLOCK_END and bb_info and len(bb_info) > 0:
+            # 使用 _determine_basic_block_end 方法来获取基本块结束地址列表
+            bb_end_list = self._determine_basic_block_end(resolved_start, robust=robust_bb_exit)
+            return (StopConditionType.BASIC_BLOCK_END, bb_end_list if bb_end_list else [])
 
         return (StopConditionType.MANUAL, None)
 
@@ -1348,7 +1454,10 @@ if __name__ == "__main__":
         register_inputs={},
         stack_inputs={-0x17: b"AAAAAAAA\x00"},
         memory_inputs={0x10000: b"secret_data_here"},
-        skip_external=True
+        skip_external=True,
+        stop_type=StopConditionType.FUNCTION_END,
+        robust_function_exit=True,
+        robust_bb_exit=True
     )
 
     print(f"Block emulation: {result1['steps_executed']} steps")
