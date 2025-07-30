@@ -371,13 +371,10 @@ class ESILEmulator:
                 stop_reason = "execution_failed"
                 break
 
-            # 获取执行后的下一个PC值
-            next_pc = self._get_current_pc()
-
             # 检查函数/基本块出口列表停止条件
             condition_type, condition_value = stop_condition
             if condition_type in [StopConditionType.FUNCTION_END, StopConditionType.BASIC_BLOCK_END] and isinstance(condition_value, list):
-                if next_pc in condition_value:
+                if current_pc in condition_value:
                     stop_reason = f"reached_{condition_type.value}"
                     break
 
@@ -708,6 +705,7 @@ class ESILEmulator:
             返回包含所有相关地址的列表（包括函数尾和外跳出口）
         """
         info = self.r2.cmdj(f"afij @ {pc}")
+        blocks = self.r2.cmdj(f"afbj @ {pc}")
         if not info:
             return None
 
@@ -715,8 +713,10 @@ class ESILEmulator:
         base = f["addr"]
         size = f["size"]
         upper = base + size
+        last_block = self.r2.cmdj(f"afbj @ {base}")[-1]
+        last_instr_addr = last_block.get('instrs', [0])[-1]
 
-        exits = [upper]  # 默认尾后一字节作兜底
+        exits = [last_instr_addr]  # 默认最后一个指令的地址作兜底
 
         if not robust:
             return exits
@@ -755,7 +755,9 @@ class ESILEmulator:
         size = bb_info["size"]
         upper = base + size
 
-        exits = [upper]  # 默认尾后一字节作兜底
+        last_instr_addr = bb_info.get('instrs', [0])[-1]
+
+        exits = [last_instr_addr]  # 默认最后一个指令的地址作兜底
 
         if not robust:
             return exits
@@ -767,7 +769,7 @@ class ESILEmulator:
                 tgt = bb_info.get(k)
                 if tgt is not None:
                     # 检查是否在基本块范围内
-                    if not (base <= tgt < base + size):
+                    if not (base <= tgt < upper):
                         if tgt not in exits:
                             exits.append(tgt)
         except:
@@ -1456,11 +1458,12 @@ if __name__ == "__main__":
         memory_inputs={0x10000: b"secret_data_here"},
         skip_external=True,
         stop_type=StopConditionType.FUNCTION_END,
+        max_steps=5000,
         robust_function_exit=True,
         robust_bb_exit=True
     )
 
-    print(f"Block emulation: {result1['steps_executed']} steps")
+    print(f"Block emulation: {result1['execution_stats']['steps_executed']} steps")
     print(f"Stop reason: {result1['stop_reason']}")
 
     # Analyze crypto-like operations
@@ -1471,7 +1474,7 @@ if __name__ == "__main__":
     print("\n=== Example 2: Algorithm Analysis ===")
     # Simplified algorithm analysis
     result2 = emulator.emulate_algorithm(
-        func_name="sym.encrypt_data",
+        func_name="sym._complex_function",
         inputs={
             "data": b"AAAAAAAAAAAAAAAA",  # 16 bytes test data
             "key": b"1234567890123456",   # 16 bytes key
@@ -1479,7 +1482,7 @@ if __name__ == "__main__":
         }
     )
 
-    print(f"Algorithm steps: {result2['steps_executed']}")
+    print(f"Algorithm steps: {result2['execution_stats']['steps_executed']}")
     if 'algorithm_analysis' in result2:
         analysis = result2['algorithm_analysis']
         print(f"Crypto indicators: {len(analysis['crypto_indicators'])}")
@@ -1532,7 +1535,7 @@ if __name__ == "__main__":
         skip_external=True  # Will use our custom handler
     )
 
-    print(f"Function with custom rand(): {result5['steps_executed']} steps")
+    print(f"Function with custom rand(): {result5['execution_stats']['steps_executed']} steps")
 
     print("\n=== Example 6: Memory Trace Analysis ===")
     # Detailed memory access analysis
