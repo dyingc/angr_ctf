@@ -56,6 +56,7 @@ class ESILEmulator:
             r2_instance: radare2 instance (r2pipe or similar)
         """
         self.r2 = r2_instance
+        self.r2.cmd("aaa 2>/dev/null")  # 确保分析完成
         self.logger = logging.getLogger(__name__)
         self.external_handlers = {}
 
@@ -838,7 +839,7 @@ class ESILEmulator:
             bb_end_list = self._determine_basic_block_end(resolved_start, robust=robust_bb_exit)
             return (StopConditionType.BASIC_BLOCK_END, bb_end_list if bb_end_list else [])
 
-        return (StopConditionType.MANUAL, None)
+        return (StopConditionType.MANUAL, [0])
 
     def _resolve_address(self, addr: Union[str, int]) -> int:
         """
@@ -1129,29 +1130,122 @@ class ESILEmulator:
         return export_data
 
 
-# 优化使用示例
-if __name__ == "__main__":
+def emulate_region(binary_path:str,
+                   start_addr: Union[str, int],
+                   end_addr: Optional[Union[str, int]] = None,
+                   register_inputs: Optional[Dict] = None,
+                   stack_inputs: Optional[Dict] = None,
+                   memory_inputs: Optional[Dict] = None,
+                   skip_external: bool = True,
+                   stop_type: StopConditionType = StopConditionType.FUNCTION_END,
+                   max_steps: int = 10000,
+                   robust_function_exit: bool = False,
+                   robust_bb_exit: bool = False) -> Dict[str, Any]:
+    """
+    对二进制文件中的指定代码区域进行 ESIL 优化模拟，**仅返回寄存器/内存的真实变化**，
+    旨在为 LLM 提供精炼且可机读的执行副作用信息。
+
+    Args:
+        binary_path (str): 要分析的 ELF/Mach-O/PE 文件路径。
+        start_addr (str | int): 起始位置，可为符号名（如 `"main"`）、表达式（如 `"func+0x12"`）或
+            十六进制地址 `0x401000`。
+        end_addr (str | int | None, optional): 明确的停止地址；省略时依据 `stop_type` 自动推断。
+        register_inputs (dict[str, int | bytes] | None, optional): 初始寄存器状态。若值为
+            `bytes`，函数会先写入内存，再让寄存器指向该地址。
+        stack_inputs (dict[int, int | bytes] | None, optional): **以当前栈顶为基准** 写入数据，用于模拟
+            被调用函数的参数或更广义的“栈快照”。键为偏移量（负数对应向高地址方向），值可为
+            `int` 或 `bytes`。
+        memory_inputs (dict[int, int | bytes] | None, optional): 绝对地址写入内存数据。
+        skip_external (bool, optional): 是否跳过外部库函数调用，默认 `True`。
+        stop_type (StopConditionType, optional): 停止条件类型，默认 `FUNCTION_END`。
+        max_steps (int, optional): 最大指令步数，默认 10000。
+        robust_function_exit (bool, optional): 若为 `True`，函数尾检测将收集所有外跳出口。
+        robust_bb_exit (bool, optional): 同上但作用于基本块层级。
+
+    Returns:
+        dict: 结构化结果，关键字段包括
+            • `final_state`：寄存器/内存最终变化摘要
+            • `execution_trace`：只包含有变化的快照列表
+            • `execution_stats`：步数、压缩比、修改统计等
+            • `stop_reason`：终止原因字符串
+            • `stop_condition`：实际使用的停止条件元组
+
+    Example:
+        ```python
+        result = emulate_region(
+            binary_path="./bin/crackme",
+            start_addr="sym.check_pass",
+            register_inputs={"rdi": b"p@ss\\x00"},
+            stack_inputs={-0x10: 0xdeadbeef, -0x18: b\"AAAA\"},
+            skip_external=True,
+            stop_type=StopConditionType.FUNCTION_END,
+            robust_function_exit=True
+        )
+        print(result["final_state"]["register_changes"])
+        # => {'rax': {'prev': 0x0, 'curr': 0x1}}
+        ```
+        返回的结果结构示例：
+        ```jsonc
+        {
+          "final_state": {
+            "register_changes": { reg: { "prev": int|None, "curr": int|None }, ... },
+            "memory_changes":   { addr: { "prev": bytes|None, "curr": bytes|None }, ... },
+            "total_registers":        int,
+            "total_memory_locations": int
+          },
+          "execution_trace": [  // 仅含有变化的步骤
+            {
+              "pc":               0x401020,
+              "instruction":      "mov eax, 1",
+              "instruction_type": "mov",
+              "opcode":           "b8 01 00 00 00",
+              "esil_expression":  "1, eax, =",
+              "step_number":      3,
+              "register_changes": {...},
+              "memory_changes":   {...}
+            }, ...
+          ],
+          "execution_stats": {
+            "steps_executed":            int,
+            "trace_entries":             int,
+            "compression_ratio":         "trace_entries/steps_executed",
+            "total_register_changes":    int,
+            "total_memory_changes":      int,
+            "unique_registers_modified": int,
+            "unique_memory_modified":    int
+          },
+          "stop_reason":    "reached_function_end" | "max_steps_reached" | ...,
+          "stop_condition": [StopConditionType, value]
+        }
+        ```
+    """
     import r2pipe
     import logging
 
     # Setup logging
     logging.basicConfig(level=logging.INFO)
 
-    r2 = r2pipe.open("./00_angr_find/00_angr_find_arm")
-    emulator = ESILEmulator(r2)
+    emulator = ESILEmulator(r2pipe.open(binary_path))
+    return emulator.emulate_region(
+        start_addr=start_addr,
+        end_addr=end_addr,
+        register_inputs=register_inputs,
+        stack_inputs=stack_inputs,
+        memory_inputs=memory_inputs,
+        skip_external=skip_external,
+        stop_type=stop_type,
+        max_steps=max_steps,
+        robust_function_exit=robust_function_exit,
+        robust_bb_exit=robust_bb_exit
+    )
 
-    print("=== Example 1: Code Block Analysis ===")
-    main_addr = r2.cmdj("aaa; afij @ main")[0]['addr']
-    ops = r2.cmdj(f"pdfj @ {main_addr}").get('ops', [])
-    scanf_funcs = [(i, cmd) for i, cmd in enumerate(ops) if cmd.get('type', '') == 'call' and '.scanf' in cmd.get('disasm', '')]
-    first_scanf = scanf_funcs[0][1]
-    after_scanf = ops[scanf_funcs[0][0] + 1] if len(ops) > scanf_funcs[0][0] else None
-    printf_funcs = [(i, cmd) for i, cmd in enumerate(ops) if cmd.get('type', '') == 'call' and '.printf' in cmd.get('disasm', '') and i > scanf_funcs[0][0]]
-    first_printf = printf_funcs[0][1] if printf_funcs else None
-    before_printf = ops[printf_funcs[0][0] - 1] if scanf_funcs[0][0] > 0 else None
+# 优化使用示例
+if __name__ == "__main__":
+    print("=== Example 1: Code Region Analysis ===")
 
-    # Analyze specific code block after user input
-    result1 = emulator.emulate_region(
+    # Analyze specific code region after user input
+    result1 = emulate_region(
+        binary_path="./00_angr_find/00_angr_find_arm",
         start_addr='main', # after_scanf.get('addr', 0x0),  # After scanf (str wzr, [var_10h])
         end_addr=None, # before_printf.get('addr', 0x0),    # Before output (add x0, x0, 0x6b7)
         register_inputs={},
@@ -1164,5 +1258,5 @@ if __name__ == "__main__":
         robust_bb_exit=True
     )
 
-    print(f"Block emulation: {result1['execution_stats']['steps_executed']} steps")
+    print(f"Code region emulation: {result1['execution_stats']['steps_executed']} steps")
     print(f"Stop reason: {result1['stop_reason']}")
