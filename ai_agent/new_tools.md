@@ -187,34 +187,7 @@ def extract_static_memory(binary_path: str, addr: int, size: int) -> dict:
 
 ---
 
-## 7. **search_string_refs**
-```python
-def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, max_refs: int = 20) -> dict:
-    """
-    使用 `r2 iz` 查找所有字符串地址，并用 `axt` 查询引用指令，输出每个字符串的所有引用详情。
-
-    Args:
-        binary_path
-        query
-        ignore_case
-        max_refs
-
-    Returns:
-        dict: {
-            'results': [
-                {'string': 'Good Job.', 'str_addr': 0x400800,
-                 'refs': [{'fcn': 'main', 'addr': 0x400900, 'disasm': 'push ...'}]}
-            ]
-        }
-    实现建议:
-      - r2 `izj`, `axtj` 批量处理所有节区字符串及xref, 自动聚类排序。
-    Priority: 00_angr_find
-    """
-```
-
----
-
-## 8. **identify_angr_hooks**
+## 7. **identify_angr_hooks**
 ```python
 def identify_angr_hooks(binary_path: str) -> dict:
     """
@@ -243,7 +216,7 @@ def identify_angr_hooks(binary_path: str) -> dict:
 
 ---
 
-## 9. **generate_angr_template**
+## 8. **generate_angr_template**
 ```python
 def generate_angr_template(path_to_binary: str, analysis_goal: str = 'find_path') -> dict:
     """
@@ -265,7 +238,7 @@ def generate_angr_template(path_to_binary: str, analysis_goal: str = 'find_path'
 
 ---
 
-## 10. **function_fingerprint**
+## 9. **function_fingerprint**
 ```python
 def function_fingerprint(binary_path: str, function_name: str) -> dict:
     """
@@ -290,7 +263,7 @@ def function_fingerprint(binary_path: str, function_name: str) -> dict:
 
 ---
 
-## 11. **analyze_loop_bounds**
+## 10. **analyze_loop_bounds**
 ```python
 def analyze_loop_bounds(binary_path: str, function_name: str) -> dict:
     """
@@ -315,7 +288,7 @@ def analyze_loop_bounds(binary_path: str, function_name: str) -> dict:
 
 ---
 
-## 12. **solve_constraints_sample**
+## 11. **solve_constraints_sample**
 ```python
 def solve_constraints_sample(constraints: list) -> dict:
     """
@@ -340,7 +313,7 @@ def solve_constraints_sample(constraints: list) -> dict:
 
 ---
 
-## 13. **collect_coverage_trace**
+## 12. **collect_coverage_trace**
 ```python
 def collect_coverage_trace(binary_path: str, input_args: str = "") -> dict:
     """
@@ -363,7 +336,7 @@ def collect_coverage_trace(binary_path: str, input_args: str = "") -> dict:
 
 ---
 
-## 14. **auto_patch_constant**
+## 13. **auto_patch_constant**
 ```python
 def auto_patch_constant(binary_path: str, addr: int, new_bytes: bytes) -> dict:
     """

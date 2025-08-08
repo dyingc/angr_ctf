@@ -13,6 +13,7 @@ import re
 import concurrent.futures
 import threading
 import queue
+import angr  # 用于补全 ELF base_addr/fallback 方案
 
 # Global lock for r2pipe operations to prevent race conditions
 r2_lock = threading.Lock()
@@ -211,6 +212,324 @@ def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, m
             return results
         finally:
             r2.quit()
+def get_reachable_addresses(binary_path: str, start_addr: int) -> Dict[str, Any]:
+    """
+    基于 CFG，自动分析所有可达的成功/失败/出口块、不可达路径和循环结构（for angr find/avoid 提供依据）。
+    Args:
+        binary_path: 执行文件路径
+        start_addr: 起始地址
+    Returns:
+        dict: {
+            'success_addresses': [0x400200],
+            'failure_addresses': [0x400300],
+            'exit_points': [0x400400],
+            'unreachable_from_start': [0x400500],
+            'loops': [{'head': 0x400600, 'back_edge': 0x400650}]
+        }
+    """
+    with r2_lock:
+        r2 = _open_r2pipe(binary_path)
+        try:
+            # 获取含所有基本块和连接信息
+            blocks = r2.cmdj(f"agfj @{start_addr}")
+            if not blocks or not isinstance(blocks, list):
+                return {
+                    "success_addresses": [],
+                    "failure_addresses": [],
+                    "exit_points": [],
+                    "unreachable_from_start": [],
+                    "loops": []
+                }
+            node_map = {}
+            edges = []
+            for func in blocks:
+                for bb in func.get("blocks", []):
+                    addr = bb.get("offset")
+                    node_map[addr] = bb
+                    # outgoing edges
+                    for dst in bb.get("jump", []) if isinstance(bb.get("jump"), list) else [bb.get("jump")]:
+                        if dst is not None:
+                            edges.append((addr, dst))
+                    for dst in bb.get("fail", []) if isinstance(bb.get("fail"), list) else [bb.get("fail")]:
+                        if dst is not None:
+                            edges.append((addr, dst))
+
+            # DFS 遍历，收集可达块、循环(back-edge)、不可达节点
+            visited = set()
+            parent = {}
+            on_path = set()
+            loops = []
+
+            def dfs(addr):
+                if addr in visited:
+                    return
+                visited.add(addr)
+                on_path.add(addr)
+                # 遍历 edges: jump/fail/branches
+                bb = node_map.get(addr)
+                for k in ['jump', 'fail', 'switch']:
+                    dsts = bb.get(k)
+                    if isinstance(dsts, list):
+                        tgts = [d for d in dsts if d is not None]
+                    else:
+                        tgts = [dsts] if dsts is not None else []
+                    for tgt in tgts:
+                        if tgt not in visited:
+                            parent[tgt] = addr
+                            dfs(tgt)
+                        elif tgt in on_path:
+                            # back edge ==> loop
+                            loops.append({"head": tgt, "back_edge": addr})
+                on_path.remove(addr)
+
+            if start_addr in node_map:
+                dfs(start_addr)
+
+            # 可达点/不可达点
+            reachable = visited
+            unreachable = set(node_map.keys()) - reachable
+
+            # 分类出口
+            success_addrs = []
+            failure_addrs = []
+            exit_points = []
+            strings_cache = {}
+
+            def get_cmt_or_str(addr):
+                """提取该块是否有 Good/Flag/Fail 等字符串引用（性能优化：缓存本地块字符串）"""
+                if addr in strings_cache:
+                    return strings_cache[addr]
+                bb = node_map.get(addr, {})
+                instrs = bb.get("ops", [])
+                foundstr = ""
+                for op in instrs:
+                    if "esil" in op and any(x in op["esil"] for x in ["Good", "GOOD", "FLAG", "SUCCESS", "TRY", "FAIL", "Again", "again"]):
+                        foundstr = op["esil"]
+                        break
+                    if "comment" in op and any(x in op["comment"] for x in ["Good", "good", "FLAG", "Success", "Fail", "Try", "Again"]):
+                        foundstr = op["comment"]
+                        break
+                strings_cache[addr] = foundstr
+                return foundstr
+
+            for addr in reachable:
+                bb = node_map.get(addr, {})
+                ops = bb.get("ops", [])
+                if not ops:
+                    continue
+                last_op = ops[-1]
+                # 判断成功/失败（含 "Good"/"Flag"/"Success"）
+                cmt = get_cmt_or_str(addr)
+                opstr = (last_op.get("opcode") or "") + " " + (last_op.get("disasm") or "")
+                if any(x in cmt for x in ["Good", "GOOD", "FLAG", "Success"]):
+                    success_addrs.append(addr)
+                elif any(x in cmt for x in ["Fail", "fail", "Try", "Again"]):
+                    failure_addrs.append(addr)
+                elif "ret" in opstr or last_op.get("type") == "ret":
+                    # 无法分类的通用出口
+                    exit_points.append(addr)
+                elif last_op.get("type") in ("trap", "invalid", "swi", "exit"):
+                    exit_points.append(addr)
+
+            return {
+                "success_addresses": list(set(success_addrs)),
+                "failure_addresses": list(set(failure_addrs)),
+                "exit_points": list(set(exit_points)),
+                "unreachable_from_start": list(unreachable),
+                "loops": loops
+            }
+        finally:
+            r2.quit()
+
+def extract_static_memory(binary_path: str, addr: int, size: int) -> Dict[str, Any]:
+    """
+    读取给定虚拟地址静态内容&所属节区/权限（flag/秘钥硬编码场景），自动补救非ASCII自动编码推断。
+    Args:
+        binary_path
+        addr
+        size
+    Returns:
+        dict: {
+            'content': b'HXUITWOA',
+            'content_hex': '4858554954574f41',
+            'content_string': 'HXUITWOA',
+            'section': '.rodata',
+            'permissions': 'r--'
+        }
+    """
+    with r2_lock:
+        r2 = _open_r2pipe(binary_path)
+        try:
+            # 读 bytes
+            content_bytes = r2.cmdj(f"pxj {size} @ {addr}")
+            if not content_bytes or not isinstance(content_bytes, list):
+                content_bytes = []
+            # auto-truncate trailing 0x00
+            cut_bytes = bytes([b for b in content_bytes if isinstance(b, int)])  # 保守转换
+            while cut_bytes and cut_bytes[-1] == 0:
+                cut_bytes = cut_bytes[:-1]
+
+            # 尝试多种方式解读
+            try:
+                s = cut_bytes.decode('utf-8')
+            except Exception:
+                try:
+                    s = cut_bytes.decode('utf-16')
+                except Exception:
+                    try:
+                        s = cut_bytes.decode('latin-1')
+                    except Exception:
+                        s = ""
+
+            content_hex = cut_bytes.hex()
+
+            # 节区 & 权限
+            section = ""
+            permissions = ""
+            sections = r2.cmdj("iSj")
+            found = False
+            for sec in sections or []:
+                vaddr = sec.get("vaddr", 0)
+                vsize = sec.get("size", 0)
+                if vaddr <= addr < vaddr + vsize:
+                    section = sec.get("name", "")
+                    permissions = sec.get("perm", "")
+                    found = True
+                    break
+
+            return {
+                "content": cut_bytes,
+                "content_hex": content_hex,
+                "content_string": s,
+                "section": section,
+                "permissions": permissions
+            }
+        finally:
+            r2.quit()
+
+def generate_angr_template(path_to_binary: str, analysis_goal: str = "find_path") -> Dict[str, Any]:
+    """
+    给定基本参数，自动生成包含 angr.Project/State/Simgr/Explore 核心流程的 python 框架，部分步骤以 TODO 标注补充点，便于新分析任务快速“开箱即用”。
+    该模板强制仅从 config.yaml.angr_templates 加载，相应字段缺失或解析失败直接抛出异常。
+    """
+    import os
+    import yaml
+    config_path = os.path.join(os.path.dirname(__file__), "../config.yaml")
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    angr_templates = config.get("angr_templates", None)
+    if not angr_templates:
+        raise RuntimeError("No 'angr_templates' section found in config.yaml")
+    key = analysis_goal if analysis_goal in angr_templates else "other"
+    if key not in angr_templates:
+        raise RuntimeError(f"No template found for analysis_goal='{analysis_goal}' in config.yaml[angr_templates]")
+    code_template = angr_templates[key]
+    if "{binary_path}" not in code_template:
+        raise RuntimeError("The template string must contain the '{binary_path}' placeholder")
+    code = code_template.replace("{binary_path}", path_to_binary)
+    return {"template_code": code}
+
+def get_binary_info(binary_path: str) -> Dict[str, Any]:
+    """
+    提取二进制基础信息，供 angr/脚本初始化分析，包括架构/端序/入口/基址/PIE/strip/节区表/PLT/GOT 表。
+    Args:
+        binary_path: ELF、PE或Mach-O文件路径
+    Returns:
+        dict: {
+            'arch': 'x86_64',
+            'bits': 64,
+            'endian': 'little',
+            'entry_point': 0x400000,
+            'base_addr': 0x400000,
+            'is_pie': False,
+            'is_stripped': False,
+            'binary_type': 'ELF',
+            'sections': [{'name': '.text', 'addr': 0x400000, 'size': 0x1000}],
+            'plt_entries': {'printf': 0x400100},
+            'got_entries': {'printf': 0x601000}
+        }
+    """
+    with r2_lock:
+        r2 = _open_r2pipe(binary_path)
+        try:
+            result = {
+                "arch": None,
+                "bits": None,
+                "endian": None,
+                "entry_point": None,
+                "base_addr": None,
+                "is_pie": None,
+                "is_stripped": None,
+                "binary_type": None,
+                "sections": [],
+                "plt_entries": {},
+                "got_entries": {}
+            }
+            ij = r2.cmdj("ij")
+            if not ij:
+                return result
+
+            # 基本信息
+            core = ij.get("core", {})
+            bininfo = ij.get("bin", {})
+            archinfo = bininfo.get("archs", [{}])[0] if bininfo.get("archs") else {}
+            info = bininfo.get("info", {})
+
+            result["arch"] = archinfo.get("arch", bininfo.get("arch"))
+            result["bits"] = archinfo.get("bits", bininfo.get("bits"))
+            result["endian"] = archinfo.get("endian", bininfo.get("endian"))
+            result["entry_point"] = info.get("entrypoint", core.get("seek"))
+            result["binary_type"] = info.get("type", bininfo.get("type"))
+
+            # PIE/strip
+            result["is_pie"] = info.get("pic", False)
+            result["is_stripped"] = info.get("stripped", False)
+
+            # 节区
+            sections = r2.cmdj("iSj")
+            if sections and isinstance(sections, list):
+                result["sections"] = [
+                    {
+                        "name": s.get("name"),
+                        "addr": s.get("vaddr"),
+                        "size": s.get("size")
+                    } for s in sections
+                ]
+            # PLT entries
+            result["plt_entries"] = {}
+            # 拉取 PLT/GOT 有不同方法：ELF 用 afl~plt，符号表及导入重定向也可补全
+            try:
+                aflj = r2.cmdj("aflj")
+                for f in aflj or []:
+                    if f.get("name", "").startswith("sym.plt."):
+                        name = f["name"].replace("sym.plt.", "")
+                        result["plt_entries"][name] = f["offset"]
+            except Exception:
+                pass
+
+            # GOT entries（全局偏移表）
+            result["got_entries"] = {}
+            try:
+                isym = r2.cmdj("isj")
+                for s in isym or []:
+                    # type = 'FUNC', section' = .got.plt/.got
+                    if s.get("section", "").startswith(".got") and s.get("bind") == "GLOBAL":
+                        name = s.get("name", "")
+                        if name:
+                            result["got_entries"][name] = s["vaddr"]
+            except Exception:
+                pass
+
+            # base_addr（部分场景用 angr 更为准确，尤其 PIE）
+            try:
+                proj = angr.Project(binary_path, auto_load_libs=False)
+                result["base_addr"] = getattr(proj.loader.main_object, "min_addr", result["entry_point"])
+            except Exception:
+                # 兜底用 entry_point
+                result["base_addr"] = result.get("entry_point")
+            return result
+        finally:
+            r2.quit()
 
 def _emulate_function_target(r2_instance, function_name, max_steps, result_queue):
     """
@@ -298,3 +617,79 @@ def emulate_function(binary_path: str, function_name: str, max_steps: int = 100,
             future.cancel()
             executor.shutdown(wait=False)
             r2.quit()
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    import textwrap
+
+    parser = argparse.ArgumentParser(description="Quick test for r2_utils new RE functions")
+    parser.add_argument("-b", "--binary", type=str, default="00_angr_find/00_angr_find_arm", help="Path to binary")
+    parser.add_argument("--print-template-lines", type=int, default=20, help="Lines to print for angr template")
+    args = parser.parse_args()
+    bin_path = args.binary
+
+    print("=" * 40)
+    print(f"[1] get_binary_info('{bin_path}')")
+    try:
+        info = get_binary_info(bin_path)
+        print(json.dumps(info, indent=2, default=str))
+    except Exception as e:
+        print(f"ERROR: {e}")
+
+    print("=" * 40)
+    print(f"[2] get_reachable_addresses('{bin_path}', entry_point)")
+    try:
+        entry = info.get("entry_point", None)
+        if entry is None:
+            raise ValueError("entry_point missing in get_binary_info()")
+        res = get_reachable_addresses(bin_path, entry)
+        print(f"Success: {len(res['success_addresses'])}  Fails: {len(res['failure_addresses'])}  Exits: {len(res['exit_points'])}  Loops: {len(res['loops'])}  Unreachable: {len(res['unreachable_from_start'])}")
+        print(json.dumps(res, indent=2, default=str))
+    except Exception as e:
+        print(f"ERROR: {e}")
+
+    print("=" * 40)
+    print(f"[3] extract_static_memory('{bin_path}', address_of_first_string_in_rodata, 16)")
+    try:
+        # 优先找.sections中的.rodata，然后找strings落在其中的第一个
+        rodata_addr = None
+        rodata_size = None
+        for s in info.get("sections", []):
+            if ".rodata" in s.get("name", "") or "cstring" in s.get("name", ""):
+                rodata_addr = s["addr"]
+                rodata_size = s["size"]
+                break
+        if rodata_addr is None:
+            raise ValueError("No .rodata or cstring section found")
+        # 获取所有字符串并筛选
+        strings = get_strings(bin_path)
+        str_addr = None
+        str_val = None
+        for st in strings:
+            va = st.get("vaddr", 0)
+            sval = st.get("string", "")
+            if rodata_addr <= va < rodata_addr + (rodata_size or 0):
+                str_addr = va
+                str_val = sval
+                break
+        if str_addr is None:
+            raise ValueError("No string found in .rodata/cstring")
+        res = extract_static_memory(bin_path, str_addr, 16)
+        print(f"String chosen: {str_val} @ 0x{str_addr:x}")
+        print(json.dumps(res, indent=2, default=str))
+    except Exception as e:
+        print(f"ERROR: {e}")
+
+    print("=" * 40)
+    print(f"[4] generate_angr_template('{bin_path}', 'find_path')")
+    try:
+        res = generate_angr_template(bin_path, "find_path")
+        lines = res["template_code"].splitlines()
+        for i, l in enumerate(lines):
+            if i >= args.print_template_lines:
+                print("(...truncated...)")
+                break
+            print(l)
+    except Exception as e:
+        print(f"ERROR: {e}")

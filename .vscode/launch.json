@@ -53,12 +53,14 @@
             "args": ["03_angr_symbolic_registers/03_angr_symbolic_registers"]
         },
         {
-            "name": "CTF 04 solution",
+            "name": "Test ai_agent/libs/r2_utils.py (demo 4 RE funcs)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/04_angr_symbolic_stack/solution.py",
+            "program": "${workspaceFolder}/ai_agent/libs/r2_utils.py",
             "console": "integratedTerminal",
-            "args": ["04_angr_symbolic_stack/04_angr_symbolic_stack"]
+            "args": [
+                "-b", "00_angr_find/00_angr_find_arm"
+            ]
         }
     ]
 }

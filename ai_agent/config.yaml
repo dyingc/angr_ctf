@@ -421,6 +421,57 @@ analyzing_tools:
   - execute_os_command_tool
   - internal_inference_tool
 
+angr_templates:
+  find_path: |
+    import angr
+    import claripy
+
+    project = angr.Project(r"{binary_path}", auto_load_libs=False)
+
+    start_addr = 0x400000  # TODO: 替换为真实入口
+    find_addr = 0x401234   # TODO: 填写目标地址
+    avoid_addr = 0x401000  # TODO: 可选，填写需要避免的分支
+
+    state = project.factory.entry_state()
+    simgr = project.factory.simgr(state)
+    simgr.explore(find=find_addr, avoid=avoid_addr)  # 参数可修改为自定义判定函数
+
+    if simgr.found:
+        found = simgr.found[0]
+        # TODO: 处理解出的输入
+        print("Got input:", found.posix.dumps(0))
+    else:
+        print("No path found.")
+
+  avoid: |
+    import angr
+
+    project = angr.Project(r"{binary_path}", auto_load_libs=False)
+
+    # TODO: 填写 start_addr, avoid_addr
+    start_addr = 0x400000
+    avoid_addr = 0x401000
+
+    state = project.factory.entry_state()
+    simgr = project.factory.simgr(state)
+    simgr.explore(avoid=avoid_addr)
+
+    if simgr.found:
+        print("Got result:", simgr.found[0])
+    else:
+        print("Avoid succeeded, no path to bad state.")
+
+  other: |
+    import angr
+
+    project = angr.Project(r"{binary_path}", auto_load_libs=False)
+    # TODO: 根据具体需求补充分析流程
+
+    state = project.factory.entry_state()
+    simgr = project.factory.simgr(state)
+    # simgr.explore(...)  # 填写定制参数
+    # TODO: 分析结果输出
+
 utility_tools:
   - mission_accomplished_tool
 
