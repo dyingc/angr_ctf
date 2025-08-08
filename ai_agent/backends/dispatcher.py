@@ -14,7 +14,7 @@ def _load_config() -> Dict[str, Any]:
     with open(config_path) as f:
         return yaml.safe_load(f)
 
-def get_backend(engine_hint: Optional[str] = None) -> BinaryAnalysisBackend:
+def get_backend(feature: str, engine_hint: Optional[str] = None) -> BinaryAnalysisBackend:
     """
     根据 engine_hint、环境变量或配置文件返回合适的后端实例。
     结果会被缓存以提高性能。
@@ -28,17 +28,26 @@ def get_backend(engine_hint: Optional[str] = None) -> BinaryAnalysisBackend:
         if not key:
             # 3. 读取配置文件
             config = _load_config()
-            key = config.get("backend", {}).get("default", "rizin").lower()
+            key = config.get("backend", {}).get("default", "radare2").lower()
 
     # 缓存键
-    cache_key = key
+    cache_key = feature
 
     if cache_key not in _backend_cache:
-        if key == "radare2":
-            _backend_cache[cache_key] = Radare2Backend()
-        else:
-            # 默认为 Rizin
-            _backend_cache[cache_key] = RizinBackend()
+        if not engine_hint:
+            if feature in ["get_pseudo_code", "get_call_graph", "get_cfg_basic_blocks"]:
+                _backend_cache[cache_key] = RizinBackend()
+            else:
+                _backend_cache[cache_key] = Radare2Backend()
+        elif key.lower() in ["rizin", "radare2"]:
+            # 如果指定了已知的后端，直接创建对应实例
+            if key.lower() == "rizin":
+                _backend_cache[cache_key] = RizinBackend()
+            elif key.lower() == "radare2":
+                _backend_cache[cache_key] = Radare2Backend()
+            else:
+                # 如果指定了未知的后端，默认使用 Radare2
+                _backend_cache[cache_key] = Radare2Backend()
 
     return _backend_cache[cache_key]
 
@@ -53,6 +62,13 @@ def call(feature: str, *args, engine_hint: Optional[str] = None, **kwargs) -> An
     Returns:
         功能的返回值。
     """
-    backend = get_backend(engine_hint)
+    backend = get_backend(feature, engine_hint)
     method = getattr(backend, feature)
     return method(*args, **kwargs)
+
+# 为向后兼容保留旧 API 名称，避免其他模块导入失败
+def call_backend(feature: str, *args, engine_hint: Optional[str] = None, **kwargs) -> Any:  # noqa: N802
+    """
+    兼容旧版名称 `call_backend`，内部直接转发到 `call`。
+    """
+    return call(feature, *args, engine_hint=engine_hint, **kwargs)

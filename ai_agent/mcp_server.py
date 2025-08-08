@@ -40,7 +40,7 @@ mcp = FastMCP(
 )
 
 @mcp.tool()
-async def get_function_list(binary_path: str, exclude_builtins: bool = True) -> Dict[str, Any]:
+async def get_function_list(binary_path: str, exclude_builtins: bool = True) -> List[Dict[str, Any]]:
     """
     Get the list of functions in a binary using the configured backend.
 
@@ -82,13 +82,13 @@ async def get_pseudo_code(binary_path: str, function_name: str) -> Dict[str, Any
     return get_pseudo_code_impl(binary_path, function_name)
 
 @mcp.tool()
-async def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dict[str, Any]:
+async def get_call_graph(binary_path: str, function_name: str = "") -> Dict[str, Any]:
     """
     Generates a call graph for a binary. Global or for a specific function.
 
     Args:
         binary_path: The absolute path to the binary file.
-        function_name: Optional. The function to start the graph from. If None, generates a global graph.
+        function_name: The function to start the graph from. If empty, generates a global graph.
 
     Returns:
         A dictionary containing the nodes and edges of the call graph.
@@ -96,7 +96,7 @@ async def get_call_graph(binary_path: str, function_name: Optional[str] = None) 
     return call_graph.get_call_graph(binary_path, function_name)
 
 @mcp.tool()
-async def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[int, Any]]:
+async def get_cfg_basic_blocks(binary_path: str, function_name: str) -> Dict[str, Any]:
     """
     Retrieves the basic blocks of a function's Control Flow Graph (CFG).
 
@@ -111,7 +111,7 @@ async def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dic
     return cfg.get_cfg_basic_blocks(binary_path, function_name)
 
 @mcp.tool()
-async def get_strings(binary_path: str, min_length: int = 4) -> List[Dict[str, Any]]:
+async def get_strings(binary_path: str, min_length: int = 4) -> Dict[str, Any]:
     """
     Extracts all printable strings from a binary file.
 
@@ -125,7 +125,7 @@ async def get_strings(binary_path: str, min_length: int = 4) -> List[Dict[str, A
     return strings.get_strings(binary_path, min_length)
 
 @mcp.tool()
-async def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, max_refs: int = 50) -> List[Dict[str, Any]]:
+async def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, max_refs: int = 50) -> Dict[str, Any]:
     """
     Finds all references in the code to strings matching a given query.
 
@@ -143,11 +143,11 @@ async def search_string_refs(binary_path: str, query: str, ignore_case: bool = T
 @mcp.tool()
 async def emulate_region(
     binary_path: str,
-    start_addr: str | int,
-    end_addr: str | int | None = None,
-    register_inputs: dict | None = None,
-    stack_inputs: dict | None = None,
-    memory_inputs: dict | None = None,
+    start_addr: str,
+    end_addr: str,
+    register_inputs: dict,
+    stack_inputs: dict,
+    memory_inputs: dict,
     skip_external: bool = True,
     stop_type: StopConditionType = StopConditionType.FUNCTION_END,
     max_steps: int = 10000,

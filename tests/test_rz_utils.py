@@ -5,7 +5,7 @@ from unittest.mock import patch
 # 被测模块
 from ai_agent import rz_utils
 from ai_agent.reverse_engineering import (
-    _get_call_graph_tool_impl,
+    get_call_graph,
     _get_cfg_basic_blocks_tool_impl,
     _get_strings_tool_impl,
     _search_string_refs_tool_impl,
@@ -191,7 +191,7 @@ class TestRzUtilsFunctions(unittest.TestCase):
         self.assertEqual(len(result["nodes"]), 2)
         self.assertEqual(len(result["edges"]), 1)
         # 检查 reverse_engineering 的包装器
-        wrapper_out = _get_call_graph_tool_impl(
+        wrapper_out = get_call_graph(
             CallGraphToolInput(binary_path=self.bin_path)
         )
         self.assertEqual(wrapper_out["result"], result)

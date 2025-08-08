@@ -38,18 +38,35 @@ class Radare2Backend(BinaryAnalysisBackend):
             func_list = impl.json.loads(functions)
             if exclude_builtins:
                 # 示例中仅过滤 sym. 开头的
-                func_list = [f for f in func_list if not f["name"].startswith("sym.")]
+                func_list = [f for f in func_list if not f["name"].startswith("sym.imp.")]
             shortented_func_list = []
             for func in func_list:
                 shortented_func = {
-                    "offset": func["offset"],
+                    "offset": func["addr"],
                     "name": func["name"],
                     "size": func["realsz"],
                     "file": func.get("file", ""),
                     "signature": func["signature"]
                 }
-                # 示例中未提供 caller 列表，此处留空
+
+                # Get the list of functions that call this function
+                xrefs = r2.cmdj(f"axtj @ {shortented_func['offset']}")
                 shortented_func["called_by"] = []
+                for x in xrefs or []:
+                    from_addr = x.get("from")
+                    if from_addr is None:
+                        continue
+                    # Get the function info for the caller
+                    finfo = r2.cmdj(f"afij @ {from_addr}")
+                    if not finfo or not isinstance(finfo, list):
+                        continue
+                    fname = finfo[0].get("name", "")
+                    if not fname:
+                        continue
+                    five_instructs_before_calling = [{'addr': i.get('addr', ''), 'disasm': i.get('disasm', 'unknown')} for i in r2.cmdj(f'pdj -5 @ {from_addr}')]
+                    # Append the caller info
+                    shortented_func["called_by"].append({'name': fname, 'offset': from_addr, 'five_instructs_before_calling': five_instructs_before_calling})
+
                 shortented_func_list.append(shortented_func)
             return shortented_func_list
         finally:
@@ -58,11 +75,10 @@ class Radare2Backend(BinaryAnalysisBackend):
     def get_disassembly(self, binary_path: str, function_name: str) -> str:
         r2 = impl._open_r2pipe(binary_path)
         try:
-            disassembly = r2.cmd(f"pdfj @ {function_name}")
+            disassembly = r2.cmd(f"e asm.lines=false; e asm.bytes=false; pdf @ {function_name}") # do not display the opcodes
             if not disassembly or not isinstance(disassembly, str):
                 return ""
-            disassembly = impl.json.loads(disassembly)
-            return '\n'.join([f"{d['offset']}\t{d['disasm']}" for d in disassembly.get('ops', [])])
+            return disassembly.strip()
         finally:
             r2.quit()
 

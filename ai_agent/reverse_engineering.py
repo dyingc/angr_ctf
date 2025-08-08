@@ -30,7 +30,7 @@ class FunctionListToolInput(BaseModel):
     binary_path: str = Field(..., description="The path to the binary file.")
     exclude_builtins: bool = Field(True, description="Whether to exclude the system or C-library built-in functions, usually starts with \"sym.\".")
 
-def get_function_list(binary_path:str, exclude_builtins:bool=True)->Dict[str, Any]:
+def get_function_list(binary_path:str, exclude_builtins:bool=True)->List[Dict[str, Any]]:
     # Use the backend dispatcher to get the function list
     # Note: The backend's get_function_list may not include 'called_by' information.
     # This is a limitation of the current backend implementation.
@@ -56,7 +56,7 @@ class DisassemblyToolInput(BaseModel):
 def get_disassembly(binary_path:str, function_name:str)->Dict[str, Any]:
     # Use the backend dispatcher to get the disassembly
     result = call_backend('get_disassembly', binary_path, function_name)
-    return result
+    return {"result": result}
 
 # Create the disassembly_tool tool
 disassembly_tool = StructuredTool.from_function(
@@ -74,8 +74,9 @@ class PseudoCodeToolInput(BaseModel):
     binary_path: str = Field(..., description="The path to the binary file.")
     function_name: str = Field(..., description="The name of the function to get pseudo C code.")
 
-def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]:
+def get_pseudo_code(binary_path:str, function_name:str)-> List[Dict[str, Any]]:
     # Use the backend dispatcher to get the pseudo code
+    config = get_config()
     pcode_str = call_backend('get_pseudo_code', binary_path, function_name)
     if not pcode_str:
         return {
@@ -87,7 +88,6 @@ def get_pseudo_code(binary_path:str, function_name:str)-> Dict[str, Any]:
             ]
         }
 
-    config = get_config()
     return {
         "result": pcode_str,
         "need_refine": True,
@@ -233,12 +233,12 @@ class CallGraphToolInput(BaseModel):
     binary_path: str = Field(..., description="The path to the binary file.")
     function_name: Optional[str] = Field(None, description="The name of the function to generate the call graph for. If None, a global call graph is generated.")
 
-def _get_call_graph_tool_impl(tool_input: CallGraphToolInput) -> Dict[str, Any]:
+def get_call_graph(tool_input: CallGraphToolInput) -> Dict[str, Any]:
     result = call_backend('get_call_graph', tool_input.binary_path, tool_input.function_name)
     return {"result": result, "need_refine": False, "prompts": []}
 
 call_graph_tool = StructuredTool.from_function(
-    _get_call_graph_tool_impl,
+    get_call_graph,
     name="get_call_graph",
     description="Generates a call graph for a binary using Rizin. Can be global or for a specific function with depth.",
     args_schema=CallGraphToolInput,
@@ -426,3 +426,29 @@ internal_inference_tool = StructuredTool.from_function(
     description="Use this tool to perform internal reasoning and inference based only on existing known facts and logical methods.",
     args_schema=InternalInferenceToolInput,
 )
+
+if __name__ == "__main__":
+    # Example usage of the tools
+    import os
+    binary_path = os.path.join(os.path.curdir, "./00_angr_find/00_angr_find_arm")
+    function_name = "main"
+
+    # # Get function list
+    # function_list = get_function_list(binary_path, exclude_builtins=True)
+
+    # # Get disassembly of a specific function
+    # disassembly = get_disassembly(binary_path, function_name)
+
+    # # Get pseudo code of a specific function
+    # pseudo_code = get_pseudo_code(binary_path, function_name)
+
+    from ai_agent.core import call_graph, cfg, strings, emulation
+
+    # Get call graph for a specific function
+    # cg1 = get_call_graph(CallGraphToolInput(binary_path=binary_path, function_name="sym._complex_function"))
+    # cg2 = call_graph.get_call_graph(binary_path, "sym._complex_function")
+
+    # Get basic blocks for a specific function
+    cfg_blocks = cfg.get_cfg_basic_blocks(binary_path, function_name)
+
+    pass
