@@ -444,7 +444,7 @@ def get_binary_info(binary_path: str) -> Dict[str, Any]:
             'is_pie': False,
             'is_stripped': False,
             'binary_type': 'ELF',
-            'sections': [{'name': '.text', 'addr': 0x400000, 'size': 0x1000}],
+            'sections': [{'name': '0.__TEXT.__text', 'addr': 4294968568, 'size': 396, 'perm': '-r-x'}, ...],
             'plt_entries': {'printf': 0x400100},
             'got_entries': {'printf': 0x601000}
         }
@@ -466,24 +466,23 @@ def get_binary_info(binary_path: str) -> Dict[str, Any]:
                 "got_entries": {}
             }
             ij = r2.cmdj("ij")
-            if not ij:
+            entryinfo = r2.cmdj("iej")[0]
+            if not ij or not isinstance(ij, dict) or not entryinfo or not isinstance(entryinfo, dict):
                 return result
 
             # 基本信息
-            core = ij.get("core", {})
             bininfo = ij.get("bin", {})
-            archinfo = bininfo.get("archs", [{}])[0] if bininfo.get("archs") else {}
-            info = bininfo.get("info", {})
 
-            result["arch"] = archinfo.get("arch", bininfo.get("arch"))
-            result["bits"] = archinfo.get("bits", bininfo.get("bits"))
-            result["endian"] = archinfo.get("endian", bininfo.get("endian"))
-            result["entry_point"] = info.get("entrypoint", core.get("seek"))
-            result["binary_type"] = info.get("type", bininfo.get("type"))
+            result["arch"] = bininfo.get("arch", "x86_64")
+            result["bits"] = bininfo.get("bits", 64)
+            result["endian"] = bininfo.get("endian", "little")
+            result["entry_point"] = entryinfo.get("vaddr")
+            result["binary_type"] = bininfo.get("bintype")
+            result["base_addr"] = bininfo.get("baddr", 0)  # 可能为0，后续用 angr 补全
 
             # PIE/strip
-            result["is_pie"] = info.get("pic", False)
-            result["is_stripped"] = info.get("stripped", False)
+            result["is_pie"] = bininfo.get("pic", False)
+            result["is_stripped"] = bininfo.get("stripped", False)
 
             # 节区
             sections = r2.cmdj("iSj")
@@ -492,8 +491,9 @@ def get_binary_info(binary_path: str) -> Dict[str, Any]:
                     {
                         "name": s.get("name"),
                         "addr": s.get("vaddr"),
-                        "size": s.get("size")
-                    } for s in sections
+                        "size": s.get("size"),
+                        "perm": s.get("perm", "----")
+                    } for s in sections if s.get("name") and s.get("vaddr") != 0 and s.get("size") != 0
                 ]
             # PLT entries
             result["plt_entries"] = {}
@@ -501,22 +501,43 @@ def get_binary_info(binary_path: str) -> Dict[str, Any]:
             try:
                 aflj = r2.cmdj("aflj")
                 for f in aflj or []:
-                    if f.get("name", "").startswith("sym.plt."):
-                        name = f["name"].replace("sym.plt.", "")
-                        result["plt_entries"][name] = f["offset"]
+                    if f.get("name", "").startswith("sym.imp."):
+                        name = f["name"].replace("sym.imp.", "")
+                        result["plt_entries"][name] = f["addr"]
             except Exception:
                 pass
 
             # GOT entries（全局偏移表）
-            result["got_entries"] = {}
+            # === 基于区段范围识别 GOT 槽 ===
+            result.setdefault("got_entries", {})
+
+            # 1) 从已有的 result["sections"] 中构建 “GOT 相关区段” 的地址区间
+            got_ranges = []
+            for s in result.get("sections", []):
+                n = s.get("name") or ""
+                # ELF: .got / .got.plt
+                # Mach-O: __DATA,__la_symbol_ptr / __DATA_CONST,__got / 兼容 __DATA.__got
+                if (
+                    n.endswith(".got") or n.endswith(".got.plt") or
+                    n.endswith("__DATA.__la_symbol_ptr") or
+                    n.endswith("__DATA_CONST.__got") or
+                    n.endswith("__DATA.__got")
+                ):
+                    lo = s.get("addr"); sz = s.get("size") or 0
+                    if lo and sz:
+                        got_ranges.append((lo, lo + sz))
+
+            def in_got(addr: int) -> bool:
+                return any(lo <= addr < hi for lo, hi in got_ranges)
+
+            # 2) 用 isj 列符号，按 vaddr 落区间筛选（注意：并非所有 GOT 槽都有“符号名”，这里只抓得到名字的）
             try:
-                isym = r2.cmdj("isj")
-                for s in isym or []:
-                    # type = 'FUNC', section' = .got.plt/.got
-                    if s.get("section", "").startswith(".got") and s.get("bind") == "GLOBAL":
-                        name = s.get("name", "")
+                for sym in r2.cmdj("isj") or []:
+                    va = sym.get("vaddr")
+                    if va and in_got(va):
+                        name = sym.get("name") or sym.get("realname")
                         if name:
-                            result["got_entries"][name] = s["vaddr"]
+                            result["got_entries"][name] = va
             except Exception:
                 pass
 
@@ -526,7 +547,8 @@ def get_binary_info(binary_path: str) -> Dict[str, Any]:
                 result["base_addr"] = getattr(proj.loader.main_object, "min_addr", result["entry_point"])
             except Exception:
                 # 兜底用 entry_point
-                result["base_addr"] = result.get("entry_point")
+                if result["base_addr"] in (0, None):
+                    result["base_addr"] = result.get("entry_point")
             return result
         finally:
             r2.quit()
