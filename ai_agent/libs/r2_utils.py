@@ -15,10 +15,12 @@ import threading
 import queue
 import angr  # 用于补全 ELF base_addr/fallback 方案
 
+from typing import Any, Dict, List, Set, Literal, Optional
+
 # Global lock for r2pipe operations to prevent race conditions
 r2_lock = threading.Lock()
 
-def _open_r2pipe(binary_path: str) -> r2pipe.open:
+def _open_r2pipe(binary_path: str, analyze: bool = True) -> r2pipe.open:
     """
     Opens an r2pipe instance for a given binary and performs initial analysis.
 
@@ -29,8 +31,35 @@ def _open_r2pipe(binary_path: str) -> r2pipe.open:
         An initialized r2pipe instance after running 'aaa' analysis and disabling color.
     """
     r2 = r2pipe.open(binary_path)
-    r2.cmd("e scr.color=0; aaa")  # Disable color, perform auto-analysis
+    if analyze:
+        r2.cmd("e scr.color=0; aaa")  # Disable color, perform auto-analysis
+    else:
+        r2.cmd("e scr.color=0")
     return r2
+
+def _resolve_address(binary_path: str, expr: int | str) -> Optional[int]:
+    """
+    Resolves an address expression to an absolute address.
+
+    Args:
+        expr: The expression to resolve, can be an integer address or a string.
+
+    Returns:
+        The resolved absolute address or None if it cannot be resolved.
+    """
+    if isinstance(expr, int):
+        return expr
+
+    with r2_lock:
+        r2 = _open_r2pipe(binary_path, analyze=False)
+        try:
+            addr = r2.cmd(f"?v {expr}")
+            if addr:
+                return int(addr, 16)
+        finally:
+            r2.quit()
+
+    return None
 
 def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -212,132 +241,488 @@ def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, m
             return results
         finally:
             r2.quit()
-def get_reachable_addresses(binary_path: str, start_addr: int) -> Dict[str, Any]:
+
+def get_reachable_addresses(
+    binary_path: str,
+    start_addr: str | int,
+    entry_mode: Literal["function", "block"] = "function",
+) -> Dict[str, Any]:
     """
-    基于 CFG，自动分析所有可达的成功/失败/出口块、不可达路径和循环结构（for angr find/avoid 提供依据）。
-    Args:
-        binary_path: 执行文件路径
-        start_addr: 起始地址
-    Returns:
-        dict: {
-            'success_addresses': [0x400200],
-            'failure_addresses': [0x400300],
-            'exit_points': [0x400400],
-            'unreachable_from_start': [0x400500],
-            'loops': [{'head': 0x400600, 'back_edge': 0x400650}]
+    从给定地址开始分析其所在函数的控制流图（CFG），返回一份**高信息密度且跨架构通用**的摘要，
+    便于自动化逆向工程与基于 LLM 的推理/规划。
+
+    设计目标
+    --------
+    - 以“包含 start_addr 的**整个函数**”为分析范围（不随 entry_mode 改变），
+    统一抽取路径可达性、出口点、调用点、间接跳转、switch 与字符串引用等关键信息。
+    - 出口点（exit_points）的定义是从“**当前函数视角**”出发：当块的所有后继都离开本函数，
+    或该块为显式终止（ret/trap/invalid/swi），则视为函数内的**终点**（覆盖尾跳/PLT stub 等）。
+    - 结果尽量简洁，但足以支撑常见的 find/avoid、路径裁剪、模糊测试与交互式溯源等任务。
+
+    入口模式
+    --------
+    - ``function``：起点为函数入口基本块（分析范围仍是该函数的全部基本块）。
+    - ``block``：起点为“包含 start_addr 的基本块”（分析范围同上，只改变遍历起点）。
+
+    Parameters
+    ----------
+    binary_path : str
+        二进制文件路径。
+    start_addr : str | int
+        起始地址（可为整数地址或 r2 可解析的表达式，如符号名/偏移等）。内部会解析并归一化到所属函数/块。
+    entry_mode : {"function", "block"}, optional
+        遍历起点模式；默认为 "function"。仅影响 DFS 的起点，不改变分析范围。
+
+    Returns
+    -------
+    dict
+        返回一个包含以下键的字典（所有地址为整型虚拟地址）：
+
+        - ``entry_block`` (int | None)
+            实际使用的遍历起点基本块地址。
+        - ``exit_points`` (List[Dict[str, Any]])
+            函数内“必然终止”块集合。每项形如
+            ``{"addr": <block_addr>, "reason": "<ret|trap|invalid|swi|no_successor|external_jump>"} ``。
+            - ``external_jump``：该块所有后继均不在本函数内（典型尾跳/跳至导入桩等）。
+            - 该定义与架构无关（x86 的 jmp、AArch64 的 b/br 等均适用）。
+        - ``partial_exits`` (List[Dict[str, Any]])
+            既有指向函数内的后继、又有指向函数外的后继的块，用于标注“可能逃逸”分支。
+            形如 ``{"addr": <block_addr>, "out_of_func_targets": [<addr> ...]}``。
+        - ``unreachable_from_start`` (List[int])
+            在本函数中、但从所选起点**不可达**的基本块地址列表。
+        - ``loops`` (List[Dict[str, int]])
+            检测到的循环回边，形如 ``{"head": <loop_header_addr>, "back_edge": <source_addr>}``。
+        - ``callsites`` (List[Dict[str, Any]])
+            调用点摘要。每项形如
+            ``{"addr": <insn_addr>, "callee": <str|None>, "target": <int|None>, "indirect": <bool>, "import": <bool>}``。
+            - ``indirect``：是否为间接调用或未解析到静态目标。
+            - ``import``：callee 名称是否看起来是导入符号（如 ``sym.imp.*`` / ``imp.*``）。
+        - ``indirect_jumps`` (List[Dict[str, Any]])
+            间接跳转摘要。每项至少包含 ``{"addr": <insn_addr>}``，若能静态取到潜在目标，
+            会补充 ``targets_in_func`` 与 ``targets_out_func``（均为地址列表）。
+        - ``switches`` (List[Dict[str, Any]])
+            switch 信息，形如 ``{"addr": <block_addr>, "cases": [<addr> ...], "default": <addr|None>}``。
+        - ``string_refs_in_func`` (List[Dict[str, Any]])
+            命中在本函数内的字符串引用点，形如 ``{"ref_addr": <insn_addr>, "ref_function": <str>, "ref_instruction": <str>, "string_value": <str>}``。
+            （内部对字符串数量与每个字符串的引用数做了轻量限速，以避免性能问题。）
+        - ``summary`` (Dict[str, int])
+            汇总计数：``{"reachable_count": N, "unreachable_count": M, "exit_count": K, "loop_count": L}``。
+
+    Example
+    -------
+    >>> get_reachable_addresses("/path/to/binary", 0x400100, entry_mode="function")
+    {
+        "entry_block": 4198400,
+        "exit_points": [
+            {"addr": 4198464, "reason": "ret"},
+            {"addr": 4198496, "reason": "external_jump"}
+        ],
+        "partial_exits": [
+            {"addr": 4198452, "out_of_func_targets": [4199000]}
+        ],
+        "unreachable_from_start": [4198528],
+        "loops": [
+            {"head": 4198400, "back_edge": 4198448}
+        ],
+        "callsites": [
+            {"addr": 4198440, "callee": "sym.imp.printf", "target": 4199936, "indirect": false, "import": true}
+        ],
+        "indirect_jumps": [
+            {"addr": 4198456, "targets_in_func": [], "targets_out_func": []}
+        ],
+        "switches": [
+            {"addr": 4198460, "cases": [4198472, 4198480], "default": 4198488}
+        ],
+        "string_refs_in_func": [
+            {"ref_addr": 4198468, "ref_function": "main", "ref_instruction": "add x1, x1, str.Good_Job._n", "string_value": "Good Job"},
+            {"ref_addr": 4198476, "ref_function": "main", "ref_instruction": "add x1, x1, str.Try_again._n", "string_value": "Try again"}
+        ],
+        "summary": {
+            "reachable_count": 12,
+            "unreachable_count": 1,
+            "exit_count": 2,
+            "loop_count": 1
         }
+    }
+
+    Notes
+    -----
+    - 需先在 radare2 中完成 ``aaa`` 自动分析；内部主要依赖 ``agfj/afbj/pdj/izj/axtj`` 等输出。
+    - “出口点”采用**函数内视角**定义：当块不再返回到本函数（如 ret、trap 或全部后继离开本函数）即视为出口。
+    - 为兼顾性能，字符串枚举与引用关系提取做了简单限速（如最多 2000 条字符串、每串至多 50 个引用点）。
+    - 本函数为**最小噪音**摘要，不提供完整 CFG 或前驱/后继映射；若需全量结构，请使用更详细的图导出流程。
     """
+    start_addr_int = _resolve_address(binary_path, start_addr)
+
     with r2_lock:
         r2 = _open_r2pipe(binary_path)
+        result =  {
+            "entry_block": None,
+            "exit_points": [],
+            "partial_exits": [],
+            "unreachable_from_start": [],
+            "loops": [],
+            "callsites": [],
+            "indirect_jumps": [],
+            "switches": [],
+            "string_refs_in_func": [],
+            "summary": {
+                "reachable_count": 0,
+                "unreachable_count": 0,
+                "exit_count": 0,
+                "loop_count": 0
+            }
+        }
         try:
-            # 获取含所有基本块和连接信息
-            blocks = r2.cmdj(f"agfj @{start_addr}")
-            if not blocks or not isinstance(blocks, list):
-                return {
-                    "success_addresses": [],
-                    "failure_addresses": [],
-                    "exit_points": [],
-                    "unreachable_from_start": [],
-                    "loops": []
-                }
-            node_map = {}
-            edges = []
-            for func in blocks:
-                for bb in func.get("blocks", []):
-                    addr = bb.get("offset")
-                    node_map[addr] = bb
-                    # outgoing edges
-                    for dst in bb.get("jump", []) if isinstance(bb.get("jump"), list) else [bb.get("jump")]:
-                        if dst is not None:
-                            edges.append((addr, dst))
-                    for dst in bb.get("fail", []) if isinstance(bb.get("fail"), list) else [bb.get("fail")]:
-                        if dst is not None:
-                            edges.append((addr, dst))
+            # 1) 取“包含 start_addr 的函数”的图（agfj）
+            funcs_or_obj = r2.cmdj(f"agfj @{start_addr_int}")
+            if not funcs_or_obj:
+                return result
 
-            # DFS 遍历，收集可达块、循环(back-edge)、不可达节点
-            visited = set()
-            parent = {}
-            on_path = set()
-            loops = []
+            funcs = funcs_or_obj if isinstance(funcs_or_obj, list) else [funcs_or_obj]
+            f0 = funcs[0] if funcs else {}
+            blocks = f0.get("blocks", []) or []
+            f_entry = f0.get("addr")
 
-            def dfs(addr):
-                if addr in visited:
+            # 2) 建块表（addr -> block）
+            node_map: Dict[int, Dict[str, Any]] = {}
+            for bb in blocks:
+                a = bb.get("addr")
+                if isinstance(a, int):
+                    node_map[a] = bb
+
+            if not node_map:
+                return result
+
+            # 3) 归一化遍历起点
+            def _find_block_head_containing(addr: int) -> Optional[int]:
+                b = r2.cmdj(f"abj @ {addr}")
+                if b and isinstance(b, list):
+                    return b[0].get("addr")
+                return None
+
+            if entry_mode == "function" and isinstance(f_entry, int) and f_entry in node_map:
+                entry_block_addr = f_entry
+            elif entry_mode == "block":
+                entry_block_addr = _find_block_head_containing(start_addr_int) or f_entry
+            else:
+                entry_block_addr = f_entry
+
+            if entry_block_addr not in node_map:
+                # 起点异常：保守返回不可达=全体
+                result['entry_block'] = entry_block_addr
+                result['unreachable_from_start'] = sorted(node_map.keys())
+                result['summary']['unreachable_count'] = len(node_map)
+                return result
+
+            # 4) 后继枚举（jump/fail/switch 合并）
+            def _succ_iter(bb: Dict[str, Any]) -> List[int]:
+                succs: List[int] = []
+                for k in ("jump", "fail", "switch"):
+                    v = bb.get(k)
+                    if isinstance(v, list):
+                        succs.extend([d for d in v if isinstance(d, int)])
+                    elif isinstance(v, int):
+                        succs.append(v)
+                # 去重（保持顺序）
+                return list(dict.fromkeys(succs))
+
+            # 5) DFS 遍历 + 循环检测
+            visited: Set[int] = set()
+            on_path: Set[int] = set()
+            loops: List[Dict[str, int]] = []
+
+            def dfs(a: int) -> None:
+                """
+                深度优先遍历可达基本块，并检测控制流中的循环回边。
+
+                该函数不返回值，遍历结果会直接更新外层作用域中的状态变量：
+                - visited: 记录所有已访问的基本块地址（可达集合）
+                - loops: 记录检测到的循环回边
+                - on_path: 递归时用于循环检测的当前路径集合（函数结束时会清空）
+
+                参数
+                ----
+                a : int
+                    当前要遍历的基本块（block）的起始地址。
+
+                逻辑说明
+                --------
+                1. 若当前块 a 已在 visited 中，说明之前访问过，直接返回。
+                2. 将 a 加入 visited（已访问）和 on_path（当前路径）。
+                3. 遍历该块的所有后继（来自 jump / fail / switch）：
+                - 若后继未访问过 → 递归调用 dfs 继续遍历。
+                - 若后继已在 on_path 中 → 检测到循环，记录到 loops 列表：
+                    {"head": 循环入口地址, "back_edge": 回边源地址}
+                4. 回溯时将 a 从 on_path 中移除。
+
+                执行后的变化
+                ------------
+                - visited 会包含从初始入口可达的所有基本块地址。
+                - loops 会追加检测到的所有循环回边信息。
+                - on_path 结束时会被清空，仅在递归过程中有值。
+
+                示例（执行过程快照）
+                -------------------
+                图（边集）：
+                    A → B,  B → C,  B → D,  D → A  （D 回到 A 形成环）
+
+                执行过程：
+                    • 初始：visited = {}, on_path = {}
+                    • 进入 A：visited = {A}, on_path = {A}
+                    • 进入 B：visited = {A,B}, on_path = {A,B}
+                    • 先走 C：visited = {A,B,C}, on_path = {A,B,C}
+                    • C 无后继或都处理完 → 回溯：on_path = {A,B}
+                    • 再走 D：visited = {A,B,C,D}, on_path = {A,B,D}
+                    • D 的后继是 A，A 已在 on_path → 记录循环 {"head": A, "back_edge": D}
+                    • D 处理完回溯：on_path = {A,B}
+                    • B 处理完回溯：on_path = {A}
+                    • A 处理完回溯：on_path = {}（空）
+
+                最终状态：
+                    • visited = {A,B,C,D}（从 A 出发都能到）
+                    • loops = [{"head": A, "back_edge": D}]（检测到 D→A 的回边）
+                    • on_path = {}（遍历结束，回溯清空）
+                """
+                if a in visited:
                     return
-                visited.add(addr)
-                on_path.add(addr)
-                # 遍历 edges: jump/fail/branches
-                bb = node_map.get(addr)
-                for k in ['jump', 'fail', 'switch']:
-                    dsts = bb.get(k)
-                    if isinstance(dsts, list):
-                        tgts = [d for d in dsts if d is not None]
-                    else:
-                        tgts = [dsts] if dsts is not None else []
-                    for tgt in tgts:
+                visited.add(a)
+                on_path.add(a)
+                for tgt in _succ_iter(node_map.get(a, {})):
+                    if tgt in node_map:
                         if tgt not in visited:
-                            parent[tgt] = addr
                             dfs(tgt)
                         elif tgt in on_path:
-                            # back edge ==> loop
-                            loops.append({"head": tgt, "back_edge": addr})
-                on_path.remove(addr)
+                            loops.append({"head": tgt, "back_edge": a})
+                on_path.remove(a)
 
-            if start_addr in node_map:
-                dfs(start_addr)
+            dfs(entry_block_addr)
 
-            # 可达点/不可达点
             reachable = visited
-            unreachable = set(node_map.keys()) - reachable
+            unreachable = sorted(set(node_map.keys()) - reachable)
 
-            # 分类出口
-            success_addrs = []
-            failure_addrs = []
-            exit_points = []
-            strings_cache = {}
+            # 6) 出口点 / 部分出口判定（跨架构通用）
+            exit_points: List[Dict[str, Any]] = []
+            partial_exits: List[Dict[str, Any]] = []
 
-            def get_cmt_or_str(addr):
-                """提取该块是否有 Good/Flag/Fail 等字符串引用（性能优化：缓存本地块字符串）"""
-                if addr in strings_cache:
-                    return strings_cache[addr]
-                bb = node_map.get(addr, {})
-                instrs = bb.get("ops", [])
-                foundstr = ""
-                for op in instrs:
-                    if "esil" in op and any(x in op["esil"] for x in ["Good", "GOOD", "FLAG", "SUCCESS", "TRY", "FAIL", "Again", "again"]):
-                        foundstr = op["esil"]
-                        break
-                    if "comment" in op and any(x in op["comment"] for x in ["Good", "good", "FLAG", "Success", "Fail", "Try", "Again"]):
-                        foundstr = op["comment"]
-                        break
-                strings_cache[addr] = foundstr
-                return foundstr
+            def _exit_reason(bb: Dict[str, Any]) -> Optional[str]:
+                ops = bb.get("ops", []) or []
+                last = ops[-1] if ops else {}
+                typ = (last.get("type") or "").lower()
+                opstr = f"{last.get('opcode','')} {last.get('disasm','')}".strip().lower()
 
-            for addr in reachable:
-                bb = node_map.get(addr, {})
-                ops = bb.get("ops", [])
-                if not ops:
-                    continue
-                last_op = ops[-1]
-                # 判断成功/失败（含 "Good"/"Flag"/"Success"）
-                cmt = get_cmt_or_str(addr)
-                opstr = (last_op.get("opcode") or "") + " " + (last_op.get("disasm") or "")
-                if any(x in cmt for x in ["Good", "GOOD", "FLAG", "Success"]):
-                    success_addrs.append(addr)
-                elif any(x in cmt for x in ["Fail", "fail", "Try", "Again"]):
-                    failure_addrs.append(addr)
-                elif "ret" in opstr or last_op.get("type") == "ret":
-                    # 无法分类的通用出口
-                    exit_points.append(addr)
-                elif last_op.get("type") in ("trap", "invalid", "swi", "exit"):
-                    exit_points.append(addr)
+                succs = _succ_iter(bb)
+                succs_in_func = [s for s in succs if s in node_map]
 
-            return {
-                "success_addresses": list(set(success_addrs)),
-                "failure_addresses": list(set(failure_addrs)),
-                "exit_points": list(set(exit_points)),
-                "unreachable_from_start": list(unreachable),
-                "loops": loops
+                # 明确终止类
+                if typ == "ret" or " ret" in f" {opstr} ":
+                    return "ret"
+                if typ in ("trap", "invalid", "swi", "exit"):
+                    return typ
+                # 无任何后继
+                if not succs:
+                    return "no_successor"
+                # 全部后继离开本函数（尾跳/外跳）
+                if not succs_in_func:
+                    # 更明确些：若最后指令是 jmp/ujmp/ijmp/尾调用
+                    if "jmp" in typ:
+                        return "external_jump"
+                    return "external_jump"
+                return None  # 不是出口（未离开函数）
+
+            for a in sorted(reachable):
+                bb = node_map.get(a, {})
+                reason = _exit_reason(bb)
+                if reason:
+                    exit_points.append({"addr": a, "reason": reason})
+                else:
+                    # 检查“部分出口”：有些后继在函数内，但也有后继在函数外
+                    succs = _succ_iter(bb)
+                    if succs:
+                        in_func = [s for s in succs if s in node_map]
+                        out_func = [s for s in succs if s not in node_map]
+                        if in_func and out_func:
+                            partial_exits.append({
+                                "addr": a,
+                                "out_of_func_targets": out_func
+                            })
+
+            # 7) 调用点、间接跳转、switch 汇总（从块的 ops 中抓取）
+            callsites: List[Dict[str, Any]] = []
+            indirect_jumps: List[Dict[str, Any]] = []
+            switches: List[Dict[str, Any]] = []
+
+            # 构造“函数内地址集合”，便于快速判断目标是否在函数内
+            in_func_addrs = set(node_map.keys())
+
+            # 快速判断“导入符号”名称
+            # 通过符号名前缀约定（radare2 常见：sym.imp.* / imp.*）
+            def _is_import_name(name: Optional[str]) -> bool:
+                if not name:
+                    return False
+                n = name.lower()
+                return n.startswith("sym.imp.") or n.startswith("imp.")
+
+            # 为了找 op 的潜在目标（静态直跳/直调），尽量从 op 的元字段里取地址
+            def _op_target_addr(op: Dict[str, Any]) -> Optional[int]:
+                # r2 的 pdj/ops 里常见：jump（直达目标）、ptr/val（间接经静态可解）、eaddr、target（偶见）
+                for k in ("jump", "ptr", "val", "eaddr", "target"):
+                    v = op.get(k)
+                    if isinstance(v, int):
+                        return v
+                # 有些 disasm 会在 'reloc' 或 'xrefs' 中携带目标，这里保持简洁不做深挖
+                return None
+
+            functions = r2.cmdj("aflj") or []
+            # 预处理：addr -> function dict（放在循环外构建一次）
+            func_by_addr = {f["addr"]: f for f in (functions or []) if isinstance(f.get("addr"), int)}
+            # 预先算好函数/块的区间，便于“包含判断”
+            func_ranges = [(bb["addr"], bb["addr"] + (bb.get("size") or 0)) for bb in blocks if isinstance(bb.get("addr"), int)]
+            def _in_func(frm: int) -> bool:
+                # 快速路径：fcn_addr 直接等于当前函数入口
+                # 注意：axtj 的 ref 可能没这个字段；有则 O(1)，没有再做区间判断
+                return any(lo <= frm < hi for (lo, hi) in func_ranges)
+
+            entry_block_size = (node_map.get(entry_block_addr, {}) or {}).get("size") or 0
+            def _in_entry_block(frm: int) -> bool:
+                return entry_block_addr is not None and entry_block_size > 0 and (entry_block_addr <= frm < entry_block_addr + entry_block_size)
+
+            for bb in blocks:
+                ops = bb.get("ops", []) or []
+
+                # switch 信息直接来自 block 的 switch 字段
+                sw = bb.get("switch")
+                if sw:
+                    cases = []
+                    default = None
+                    # r2 的 agfj/switch 结构可能是 {"cases":[addr,...], "defaddr":...} 或类似
+                    c1 = sw.get("cases") or []
+                    for c in c1:
+                        if isinstance(c, int):
+                            cases.append(c)
+                        elif isinstance(c, dict) and "addr" in c and isinstance(c["addr"], int):
+                            cases.append(c["addr"])
+                    if isinstance(sw.get("defaddr"), int):
+                        default = sw["defaddr"]
+                    switches.append({
+                        "addr": bb.get("addr"),
+                        "cases": cases,
+                        "default": default
+                    })
+
+                for op in ops:
+                    typ = (op.get("type") or "").lower()
+                    dis = (op.get("disasm") or "").lower()
+                    a = op.get("addr")
+
+                    # 调用点
+                    if typ in ("call", "ucall", "icall"):
+                        tgt = _op_target_addr(op)
+
+                        callee_name = None
+                        is_import = False
+                        is_noreturn = False
+
+                        if isinstance(tgt, int):
+                            f = func_by_addr.get(tgt)
+                            if f:
+                                callee_name = f.get("name")
+                                is_noreturn = bool(f.get("noreturn"))
+                                is_import = _is_import_name(callee_name)
+                        # 回退：有些情况下 r2 会在 op 里给出符号名，但没有可解析的数值目标
+                        if not callee_name:
+                            callee_name = op.get("call")  # 可能是 'sym.imp.printf'
+                            is_import = _is_import_name(callee_name)
+
+                        callsites.append({
+                            "addr": a,
+                            "callee": callee_name,     # 可能为 None
+                            "target": tgt,             # 可能为 None（间接）
+                            "indirect": typ in ("ucall", "icall") or (tgt is None),
+                            "import": is_import,
+                            "noreturn": is_noreturn,   # 新增：对后续路径裁剪很有用
+                        })
+
+                    # 间接跳转
+                    if typ in ("ijmp", "ujmp") or (" br" in f" {dis} " and "ret" not in dis):
+                        tgt = _op_target_addr(op)
+                        record = {"addr": a}
+                        if tgt is not None:
+                            record["targets_in_func"] = [tgt] if tgt in in_func_addrs else []
+                            record["targets_out_func"] = [tgt] if tgt not in in_func_addrs else []
+                        else:
+                            record["targets_in_func"] = []
+                            record["targets_out_func"] = []
+                        indirect_jumps.append(record)
+
+            # 8) 作用域内的字符串引用（函数/块作用域可选）
+            string_refs_in_func: List[Dict[str, Any]] = []
+            try:
+                strings = r2.cmdj("izj") or []
+                strings = strings[:2000]  # 轻量限速
+                for s in strings:
+                    va = s.get("vaddr")
+                    sval = s.get("string")
+                    if not isinstance(va, int) or not sval:
+                        continue
+                    refs = r2.cmdj(f"axtj @ {va}") or []
+                    for ref in refs[:50]:  # 每个字符串最多 50 个引用
+                        frm = ref.get("from")
+                        if not isinstance(frm, int):
+                            continue
+
+                        keep = False
+                        if entry_mode == "function":
+                            # 1) 优先用 ref.fcn_addr 判断是否为当前函数
+                            fa = ref.get("fcn_addr")
+                            if isinstance(fa, int) and isinstance(f_entry, int):
+                                keep = (fa == f_entry)
+                            else:
+                                # 2) 回退：用 “frm 是否落在本函数任一基本块区间”
+                                keep = _in_func(frm)
+                        else:  # entry_mode == "block"
+                            keep = _in_entry_block(frm)
+
+                        if keep:
+                            string_refs_in_func.append({
+                                "ref_addr": frm,                    # 指令地址
+                                "ref_function": ref.get("fcn_name"),# 所在函数
+                                "ref_instruction": ref.get("opcode"),# 指令文本
+                                "string_value": sval                 # 引用的字符串内容
+                            })
+                # 去重：按 (addr, string)
+                seen = set()
+                deduped = []
+                for it in string_refs_in_func:
+                    key = (it["ref_addr"], it["ref_function"], it["ref_instruction"], it["string_value"])
+                    if key not in seen:
+                        seen.add(key)
+                        deduped.append(it)
+                string_refs_in_func = deduped
+            except Exception:
+                # 字符串解析失败就留空，不影响主流程
+                string_refs_in_func = []
+
+            # 9) 汇总计数
+            summary = {
+                "reachable_count": len(reachable),
+                "unreachable_count": len(unreachable),
+                "exit_count": len(exit_points),
+                "loop_count": len(loops),
             }
+
+            # 10) 返回整理
+            result['entry_block'] = entry_block_addr
+            result['exit_points'] = exit_points
+            result['partial_exits'] = partial_exits
+            result['unreachable_from_start'] = unreachable
+            result['loops'] = loops
+            result['callsites'] = callsites
+            result['indirect_jumps'] = indirect_jumps
+            result['switches'] = switches
+            result['string_refs_in_func'] = string_refs_in_func
+            result['summary'] = summary
+            return result
         finally:
             r2.quit()
 
@@ -665,8 +1050,7 @@ if __name__ == "__main__":
         entry = info.get("entry_point", None)
         if entry is None:
             raise ValueError("entry_point missing in get_binary_info()")
-        res = get_reachable_addresses(bin_path, entry)
-        print(f"Success: {len(res['success_addresses'])}  Fails: {len(res['failure_addresses'])}  Exits: {len(res['exit_points'])}  Loops: {len(res['loops'])}  Unreachable: {len(res['unreachable_from_start'])}")
+        res = get_reachable_addresses(bin_path, entry, entry_mode="function")
         print(json.dumps(res, indent=2, default=str))
     except Exception as e:
         print(f"ERROR: {e}")
