@@ -1,0 +1,470 @@
+templates:
+  # 1) Path search (merges: find_path + avoid)
+  path_search: |
+    ## Path search: reach target and/or avoid list (merged; arch-agnostic)
+    import angr, claripy
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+
+    start = p.entry
+    find_addr = 0x401234          # or: lambda s: b"SUCCESS" in s.posix.dumps(1) - TODO
+    avoid_addrs = [0x401000]      # list or callable - TODO
+
+    s = p.factory.entry_state(addr=start)
+    sm = p.factory.simulation_manager(s)
+    sm.explore(find=find_addr, avoid=avoid_addrs)
+
+    if sm.found:
+        st = sm.found[0]
+        if st.solver.satisfiable():
+            try: print(b"stdin:", st.posix.dumps(0))
+            except: pass
+            out = st.posix.dumps(1)
+            if out: print(b"stdout:", out)
+            print("reached:", hex(st.addr))
+    else:
+        print("no path; deadended:", len(sm.deadended), "active:", len(sm.active))
+
+  # 2) State & debugging (merges: stash_management + debugging_symbolic)
+  state_debug: |
+    ## State & stash debugging: move/merge/prune + quick constraint/var peek
+    import angr
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+    s = p.factory.entry_state()
+    sm = p.factory.simulation_manager(s)
+
+    # sample stash ops
+    sm.step()
+    sm.stash(filter_func=lambda st: b"error" in st.posix.dumps(1), from_stash='active', to_stash='errored')
+    sm.move(from_stash='active', to_stash='found', filter_func=lambda st: st.addr == 0x401234) # TODO
+    if len(sm.active) > 50: sm.merge(stash='active')
+    sm.prune('active')
+
+    class Debugger(angr.ExplorationTechnique):
+        def __init__(self, breakpoints=None): super().__init__(); self.bps=set(breakpoints or [])
+        def filter(self, simgr, st, **kw):
+            if st.addr in self.bps:
+                print(f"[BP] {hex(st.addr)}  depth={st.history.block_count}")
+                cons = list(st.solver.constraints)
+                for c in cons[-5:]: print("  ", c)
+            return simgr.filter(st, **kw)
+    sm.use_technique(Debugger([0x401234])) # TODO
+    for i in range(5):
+        print(f"step {i} active={len(sm.active)}"); sm.step()
+
+  # 3) Exploration + performance (merges: exploration_techniques + performance_optimization + unicorn_acceleration)
+  exploration_perf: |
+    ## Exploration & perf: DFS/BFS, LoopSeer/Veritesting, Unicorn, state cap
+    import angr
+    from angr import exploration_techniques as ET, options as o
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+    s = p.factory.entry_state(add_options={o.OPTIMIZE_IR, o.SIMPLIFY_CONSTRAINTS, o.SIMPLIFY_MEMORY_WRITES,
+                                           o.SIMPLIFY_REGISTER_WRITES, o.FAST_MEMORY, o.FAST_REGISTERS,
+                                           o.LAZY_SOLVES, o.UNICORN})
+    sm = p.factory.simulation_manager(s)
+    sm.use_technique(ET.DFS())
+    sm.use_technique(ET.LengthLimiter(max_length=1000))
+    sm.use_technique(ET.LoopSeer(bound=10))
+    sm.use_technique(ET.Veritesting())
+    class StateReducer(angr.ExplorationTechnique):
+        def __init__(self, n=30): super().__init__(); self.n=n
+        def step(self, sm, stash='active', **kw):
+            if len(sm.active) > self.n:
+                sm.active.sort(key=lambda st: getattr(st.history, "block_count", 0), reverse=True)
+                del sm.active[self.n:]
+                print(f"reduced to {self.n}")
+            return sm.step(stash=stash, **kw)
+    sm.use_technique(StateReducer(30))
+    sm.step(n=100)
+
+  # 4) Memory & init (merges: advanced_memory_model + bits of multi_arch)
+  memory_init: |
+    ## Memory/init: ZERO-fill, map scratch, bytewise constraints, per-arch touch
+    import angr, claripy
+    from archinfo import Endness
+    from angr import options as o
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+    s = p.factory.entry_state(add_options={o.ZERO_FILL_UNCONSTRAINED_MEMORY, o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                                           o.SYMBOLIC_INITIAL_VALUES, o.SIMPLIFY_MEMORY_WRITES, o.SIMPLIFY_REGISTER_WRITES})
+    try: s.memory.map_region(0x70000000, 0x1000, permissions=7)
+    except: pass
+    pw_addr = 0x601000
+    pw = claripy.BVS('password', 16*8)
+    for i,b in enumerate(pw.chop(8)):
+        s.solver.add(b >= 0x20, b <= 0x7e)
+        if i<15: s.solver.add(b != pw.get_byte(i+1))
+    s.memory.store(pw_addr, pw)
+    s.memory.store(0x602000, b"MARKER")
+    val = s.memory.load(0x602000, 6, endness=Endness.LE)
+    print("read:", s.solver.eval(val, cast_to=bytes))
+
+    # Per-arch demo write
+    if p.arch.name == 'AMD64':
+        s.regs.rdi = 0xdeadbeef
+    elif p.arch.name.startswith('ARM') and p.arch.bits == 64:
+        s.regs.x0 = 0xdeadbeef
+    elif p.arch.name == 'X86':
+        s.regs.eax = 0xdeadbeef
+
+  # 5) Input modeling (merges: argv_env_symbolic + symbolic_file + symbolic_registers_memory)
+  input_modeling: |
+    ## Input modeling: stdin/argv/env/file/regs/memory (ARM64/x64/x86)
+    import angr, claripy
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+
+    # stdin
+    stdin = claripy.BVS("stdin", 32*8)
+    # argv[1]
+    argv1 = claripy.BVS("argv1", 16*8)
+    # env
+    envv = claripy.BVS("ENV_SECRET", 32*8)
+    # file
+    fsz = 64
+    fcontent = claripy.BVS('file_content', fsz*8)
+    symfile = angr.SimFile('input.txt', content=fcontent, size=fsz)
+
+    s = p.factory.entry_state(args=[p.filename, argv1], env={"ENV_SECRET": envv}, fs={'input.txt': symfile}, stdin=stdin)
+
+    for b in argv1.chop(8): s.solver.add(b >= 0x20, b <= 0x7e)
+    for b in fcontent.chop(8): s.solver.add(b >= 0x20, b <= 0x7e)
+
+    # Example: symbolize a "first argument register" / a general param register
+    reg_in = claripy.BVS('reg_in', p.arch.bits)
+    if p.arch.name == 'AMD64':
+        s.regs.rdi = reg_in
+    elif p.arch.name.startswith('ARM') and p.arch.bits == 64:
+        s.regs.x0 = reg_in
+    elif p.arch.name == 'X86':
+        s.regs.eax = reg_in
+
+    # memory blob
+    mem_addr = 0x601500
+    mem_in = claripy.BVS('mem_in', 8*8)
+    s.memory.store(mem_addr, mem_in)
+
+    sm = p.factory.simulation_manager(s)
+    sm.explore(find=lambda st: b"OK" in st.posix.dumps(1))
+    if sm.found:
+        st = sm.found[0]
+        print("argv1:", st.solver.eval(argv1, cast_to=bytes))
+        print("stdin:", st.posix.dumps(0))
+        print("file:", st.solver.eval(fcontent, cast_to=bytes).rstrip(b'\\x00'))
+
+  # 6) Function call analysis (from function_analysis_v2)
+  function_call: |
+    ## Function call: call_state with concrete/symbolic args, arch-aware returns
+    import angr, claripy
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+    func = 0x401000  # target function
+
+    def ret_val(st):
+        if p.arch.name == 'AMD64':   return st.regs.rax
+        if p.arch.name == 'X86':     return st.regs.eax
+        if p.arch.name.startswith('ARM') and p.arch.bits == 64: return st.regs.x0
+        return None
+
+    def run_call(func_addr, args):
+        st = p.factory.call_state(func_addr, *args, ret_addr=0xDEADBEEF)
+        sm = p.factory.simulation_manager(st); sm.run()
+        outs = []
+        for s in sm.deadended:
+            if s.solver.satisfiable():
+                rv = ret_val(s)
+                outs.append({'return': s.solver.eval(rv) if rv is not None else None,
+                             'stdout': s.posix.dumps(1), 'constraints': len(s.solver.constraints)})
+        return outs
+
+    a1, a2 = claripy.BVS('a1', 32), claripy.BVS('a2', 32)
+    st = p.factory.call_state(func, a1, a2)
+    st.solver.add(a1 > 0, a1 < 100, a2 != 0)
+    sm = p.factory.simulation_manager(st); sm.run()
+    for s in sm.deadended:
+        if s.solver.satisfiable():
+            rv = ret_val(s)
+            print("f(", s.solver.eval(a1), ",", s.solver.eval(a2), ") ->", s.solver.eval(rv) if rv is not None else None)
+
+    for r in run_call(func, [0x10, 0x20]): print("concrete ret:", hex(r['return']) if r['return'] is not None else None)
+
+  # 7) Concolic (seeded) execution (from concolic_execution)
+  concolic_seed: |
+    ## Concolic: preconstrain stdin with a seed, removable later (arch-agnostic)
+    import angr, claripy
+    from angr.state_plugins.preconstrainer import SimStatePreconstrainer
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+    seed = b"test_input_123"
+    sym = claripy.BVS('input', len(seed)*8)
+    s = p.factory.entry_state(stdin=sym)
+    s.register_plugin('preconstrainer', SimStatePreconstrainer())
+    s.preconstrainer.preconstrain(sym, seed)
+    sm = p.factory.simulation_manager(s)
+    while sm.active:
+        sm.active.sort(key=lambda st: getattr(st.history, "block_count", 0), reverse=True)
+        sm.step()
+        for st in sm.active:
+            if b"SUCCESS" in st.posix.dumps(1):
+                try: st.preconstrainer.remove_preconstraints()
+                except: pass
+                print("found with seed; stdin:", st.posix.dumps(0)); sm.active=[]
+                break
+
+  # 8) API hooks & models (merges: api_modeling + hooks_and_stub)
+  api_hooks: |
+    ## API hooks & models: prefer libc simprocs; optional custom strcmp
+    import angr
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+    libc = angr.SIM_PROCEDURES['libc']
+    if p.loader.find_symbol('strcmp'): p.hook_symbol('strcmp', libc['strcmp']())
+    if p.loader.find_symbol('strlen'): p.hook_symbol('strlen', libc['strlen']())
+    if p.loader.find_symbol('printf'): p.hook_symbol('printf', libc['printf']())
+    if p.loader.find_symbol('malloc'): p.hook_symbol('malloc', libc['malloc']())
+    if p.loader.find_symbol('free'):   p.hook_symbol('free',   libc['free']())
+
+    class ConditionalHook(angr.SimProcedure):
+        def run(self, arg):
+            # Works across arches (bit-width comes from state.arch.bits)
+            if self.state.solver.is_true(arg == 0x1337):
+                return self.state.solver.BVV(1, self.state.arch.bits)
+            return self.state.solver.BVV(0, self.state.arch.bits)
+    # p.hook(0x401234, ConditionalHook())
+
+  # 9) Vulnerability hunting (from vulnerability_detection)
+  vuln_detection: |
+    ## Vuln hunting: heuristic canary/RET control with big symbolic stdin (ARM64/x64/x86)
+    import angr, claripy
+    from angr import ExplorationTechnique
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+
+    class OD(ExplorationTechnique):
+        def __init__(self): super().__init__(); self.hits=[]
+        def step_state(self, sm, st, **kw):
+            try:
+                # Return address check (arch-specific)
+                if p.arch.name == 'AMD64':
+                    ret = st.memory.load(st.regs.rsp, 8)
+                elif p.arch.name == 'X86':
+                    ret = st.memory.load(st.regs.esp, 4)
+                elif p.arch.name.startswith('ARM') and p.arch.bits == 64:
+                    # On AArch64 return address is LR (x30); it may be spilled later.
+                    ret = st.regs.lr
+                else:
+                    ret = None
+                if ret is not None and getattr(ret,'symbolic',False):
+                    self.hits.append(st.copy()); print("[ret] symbolic at", hex(st.addr))
+            except: pass
+
+            # Very rough canary probe (best-effort; layout dependent)
+            try:
+                if p.arch.name == 'AMD64':
+                    canary = st.memory.load(st.regs.rbp - 8, 8);
+                elif p.arch.name == 'X86':
+                    canary = st.memory.load(st.regs.ebp - 4, 4);
+                else:
+                    canary = None
+                if canary is not None and getattr(canary,'symbolic',False):
+                    self.hits.append(st.copy()); print("[canary] symbolic near", hex(st.addr))
+            except: pass
+            return sm.step_state(st, **kw)
+
+    s = p.factory.entry_state()
+    big = claripy.BVS('in', 1000*8); s.posix.stdin.write(big); s.posix.stdin.seek(0)
+    sm = p.factory.simulation_manager(s); od=OD(); sm.use_technique(od); sm.run(n=2000)
+    print("potential overflows:", len(od.hits))
+
+  # 10) Taint tracking (from taint_analysis)
+  taint_tracking: |
+    ## Taint: track stdin to dangerous sinks (system/execve/strcpy) across arches
+    import angr, claripy
+    from angr import options as o
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+
+    def load_first_arg(st):
+        # Return a BV representing arg0 at call site for each arch
+        if p.arch.name == 'AMD64':
+            return st.regs.rdi
+        if p.arch.name.startswith('ARM') and p.arch.bits == 64:
+            return st.regs.x0
+        if p.arch.name == 'X86':
+            # cdecl: [esp] return addr, [esp+4] arg0
+            return st.memory.load(st.regs.esp + 4, st.arch.bytes)
+        return None
+
+    class TT(angr.ExplorationTechnique):
+        def __init__(self): super().__init__(); self.sinks=[]
+        def setup(self, sm):
+            for st in sm.active:
+                st.options.update({o.TRACK_MEMORY_ACTIONS,o.TRACK_REGISTER_ACTIONS,o.TRACK_JMP_ACTIONS,o.TRACK_CONSTRAINT_ACTIONS})
+        def step_state(self, sm, st, **kw):
+            succ = sm.step_state(st, **kw)
+            for fn in ['system','execve','strcpy']:
+                sym = p.loader.find_symbol(fn)
+                if sym and st.addr == sym.rebased_addr:
+                    a0 = load_first_arg(st)
+                    if a0 is not None and getattr(a0,'symbolic',False):
+                        print("TAINT SINK:", fn, "at", hex(st.addr)); self.sinks.append(st.copy())
+            return succ
+
+    s = p.factory.entry_state()
+    tin = claripy.BVS('tainted', 100*8); s.posix.stdin.write(tin); s.posix.stdin.seek(0)
+    sm = p.factory.simulation_manager(s); sm.use_technique(TT()); sm.run(n=1000)
+
+  # 11) ROP chain (from rop_chain_generation)
+  rop_chain: |
+    ## ROP: gadgets, set regs, call system/execve via angrop (arch-aware)
+    import angr, angrop
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+    rop = p.analyses.ROP(); rop.find_gadgets()
+    try:
+        if p.arch.name == 'AMD64':
+            g = rop.find_gadget(['pop rdi','ret'])
+            if g: print("pop rdi; ret @", hex(g.addr))
+        elif p.arch.name == 'X86':
+            g = rop.find_gadget(['pop eax','ret'])
+            if g: print("pop eax; ret @", hex(g.addr))
+        elif p.arch.name.startswith('ARM') and p.arch.bits == 64:
+            # ARM64 ROP differs (no 'ret' gadgets like x86); angrop handles basics.
+            pass
+    except: pass
+    chain = rop.chain()
+    if p.arch.name == 'AMD64':
+        chain.set_regs(rdi=0x601000, rsi=0x602000)
+    elif p.arch.name == 'X86':
+        chain.set_regs(eax=0x1337)
+    elif p.arch.name.startswith('ARM') and p.arch.bits == 64:
+        chain.set_regs(x0=0x601000, x1=0x602000)
+
+    sym = p.loader.find_symbol('system')
+    if sym: chain.call(sym.rebased_addr, [0x601000] if p.arch.name != 'X86' else [0x601000])
+    print("payload size:", len(chain.payload_bytes()))
+    try:
+        c2 = rop.build_execve(b'/bin/sh'); print("execve size:", len(c2.payload_bytes()))
+    except Exception as e: print("execve build failed:", e)
+
+  # 12) Deobfuscation helpers (from deobfuscation)
+  deobfuscation: |
+    ## Deobfuscation: skip junk NOPs (x86/x64 0x90, ARM64 0xD503201F) & hunt for "flag"
+    import angr
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+    class JunkSkip(angr.ExplorationTechnique):
+        def step_state(self, sm, st, **kw):
+            try:
+                if p.arch.name in ('X86','AMD64'):
+                    b = st.memory.load(st.addr, 1)
+                    if st.solver.eval(b, cast_to=bytes) == b"\x90":  # x86/x64 NOP
+                        st.regs.ip = st.addr + 1; return st
+                elif p.arch.name.startswith('ARM') and p.arch.bits == 64:
+                    w = st.memory.load(st.addr, 4)
+                    if st.solver.eval(w) == 0xD503201F:  # ARM64 NOP
+                        st.regs.ip = st.addr + 4; return st
+            except: pass
+            return sm.step_state(st, **kw)
+    s = p.factory.entry_state(); sm = p.factory.simulation_manager(s)
+    sm.use_technique(JunkSkip())
+    sm.explore(find=lambda st: b"flag" in st.posix.dumps(1))
+
+  # 13) Protocol reversing (from protocol_reverse)
+  protocol_reverse: |
+    ## Protocol reversing: find recv/read handlers, infer fields, fuzz flips (ARM64/x64/x86)
+    import angr, claripy
+    from angr import options as o
+    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+
+    def find_handlers():
+        cfg = p.analyses.CFGFast(); H=set()
+        for f in cfg.kb.functions.values():
+            for b in f.blocks:
+                try:
+                    for insn in b.capstone.insns:
+                        if 'call' in insn.mnemonic and any(api in insn.op_str for api in ['recv','read','recvfrom']):
+                            H.add(f.addr); break
+                except: pass
+        return list(H)
+
+    def _set_args(st, buf, sz):
+        # Set (buf, size) as first two args on each arch
+        if p.arch.name == 'AMD64':
+            st.regs.rdi, st.regs.rsi = buf, sz
+        elif p.arch.name.startswith('ARM') and p.arch.bits == 64:
+            st.regs.x0, st.regs.x1 = buf, sz
+        elif p.arch.name == 'X86':
+            # cdecl: [esp] ret, [esp+4]=arg0, [esp+8]=arg1
+            st.memory.store(st.regs.esp + 4, st.solver.BVV(buf, st.arch.bits))
+            st.memory.store(st.regs.esp + 8, st.solver.BVV(sz,  st.arch.bits))
+
+    def analyze(handler, pkt_sz=256):
+        pkt = claripy.BVS('pkt', pkt_sz*8); buf=0x10000
+        s = p.factory.blank_state(addr=handler)
+        s.options.update({o.TRACK_MEMORY_ACTIONS,o.TRACK_REGISTER_ACTIONS,o.TRACK_JMP_ACTIONS,o.TRACK_CONSTRAINT_ACTIONS})
+        s.memory.store(buf, pkt)
+        _set_args(s, buf, pkt_sz)
+        sm = p.factory.simulation_manager(s); acc=[]
+        class Track(angr.ExplorationTechnique):
+            def step_state(self, sm, st, **kw):
+                try:
+                    for a in st.history.actions:
+                        if getattr(a,'type',None)=='mem' and getattr(a,'action',None)=='read':
+                            addr = st.solver.eval(a.addr)
+                            if buf <= addr < buf+pkt_sz:
+                                sz = a.size//8 if hasattr(a,'size') else 1
+                                acc.append((addr-buf, sz))
+                except: pass
+                return sm.step_state(st, **kw)
+        sm.use_technique(Track()); sm.run(n=2000)
+        summary={}
+        for off, sz in acc: summary.setdefault(off, {'size':sz,'hits':0}); summary[off]['hits']+=1
+        return summary
+
+    H = find_handlers(); print("handlers:", len(H))
+    if H:
+        fields = analyze(H[0]);
+        for off,info in sorted(fields.items()): print(f"offset {off}: size={info['size']} hits={info['hits']}")
+
+  # 14) General analysis harness (from general_analysis)
+  general_analysis: |
+    ## General analysis: param-driven harness with timeouts & techniques
+    import angr, claripy, time, logging
+    logging.basicConfig(level=logging.INFO); log = logging.getLogger(__name__)
+    def analyze_binary(binary_path, **kw):
+        p = angr.Project(binary_path, auto_load_libs=False)
+        params = dict(find_condition=None, avoid_conditions=None, symbolic_input_size=32, timeout=120,
+                      use_unicorn=True, use_veritesting=True, max_states=100)
+        params.update(kw)
+        inp = claripy.BVS('input', params['symbolic_input_size']*8)
+        opts = set();
+        if params['use_unicorn']: opts.add(angr.options.UNICORN)
+        s = p.factory.entry_state(stdin=inp, add_options=opts)
+        for b in inp.chop(8): s.solver.add(b >= 0x20, b <= 0x7e)
+        sm = p.factory.simulation_manager(s)
+        if params['use_veritesting']: sm.use_technique(angr.exploration_techniques.Veritesting())
+        class Limiter(angr.ExplorationTechnique):
+            def step(self, sm, stash='active', **kw):
+                if len(sm.active) > params['max_states']:
+                    sm.active.sort(key=lambda st: -st.history.block_count); del sm.active[params['max_states']:]
+                return sm.step(stash=stash, **kw)
+        sm.use_technique(Limiter())
+        t0=time.time()
+        if params['find_condition']:
+            sm.explore(find=params['find_condition'], avoid=params['avoid_conditions'])
+        else:
+            while sm.active and time.time()-t0 < params['timeout']: sm.step()
+        res={'found':[], 'avoided':len(getattr(sm,'avoided',[])), 'deadended':len(sm.deadended),
+             'active':len(sm.active), 'errored':len(sm.errored), 'time':time.time()-t0}
+        for st in getattr(sm,'found',[]):
+            if st.solver.satisfiable():
+                res['found'].append({'addr':hex(st.addr),'stdin':st.posix.dumps(0),'stdout':st.posix.dumps(1),
+                                     'stderr':st.posix.dumps(2),'constraints':len(st.solver.constraints),
+                                     'history':st.history.block_count})
+        return res
+
+    if __name__ == "__main__":
+        print(analyze_binary(r"{binary_path}", find_condition=0x401234, avoid_conditions=[0x401000], symbolic_input_size=32, timeout=60))
+
+  # ========== From scratch ==========
+  other: |
+    import angr
+    import claripy
+
+    project = angr.Project(r"{binary_path}", auto_load_libs=False)
+    # TODO: 根据具体需求补充分析流程
+
+    state = project.factory.entry_state()
+    sm = project.factory.simulation_manager(state)
+    # TODO: 自定义分析逻辑
