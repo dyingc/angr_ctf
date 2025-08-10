@@ -244,7 +244,7 @@ def search_string_refs(binary_path: str, query: str, ignore_case: bool = True, m
 
 def get_reachable_addresses(
     binary_path: str,
-    start_addr: str | int,
+    start_addr_expr: str | int,
     entry_mode: Literal["function", "block"] = "function",
 ) -> Dict[str, Any]:
     """
@@ -253,7 +253,7 @@ def get_reachable_addresses(
 
     设计目标
     --------
-    - 以“包含 start_addr 的**整个函数**”为分析范围（不随 entry_mode 改变），
+    - 以“包含 start_addr_expr 的**整个函数**”为分析范围（不随 entry_mode 改变），
     统一抽取路径可达性、出口点、调用点、间接跳转、switch 与字符串引用等关键信息。
     - 出口点（exit_points）的定义是从“**当前函数视角**”出发：当块的所有后继都离开本函数，
     或该块为显式终止（ret/trap/invalid/swi），则视为函数内的**终点**（覆盖尾跳/PLT stub 等）。
@@ -262,14 +262,14 @@ def get_reachable_addresses(
     入口模式
     --------
     - ``function``：起点为函数入口基本块（分析范围仍是该函数的全部基本块）。
-    - ``block``：起点为“包含 start_addr 的基本块”（分析范围同上，只改变遍历起点）。
+    - ``block``：起点为“包含 start_addr_expr 的基本块”（分析范围同上，只改变遍历起点）。
 
     Parameters
     ----------
     binary_path : str
         二进制文件路径。
-    start_addr : str | int
-        起始地址（可为整数地址或 r2 可解析的表达式，如符号名/偏移等）。内部会解析并归一化到所属函数/块。
+    start_addr_expr : str | int
+        起始地址（可为整数地址或 r2 可解析的表达式，如符号名/偏移等，如：`0x400100`或`main+0x10`或`4194560`等等）。内部会解析并归一化到所属函数/块。
     entry_mode : {"function", "block"}, optional
         遍历起点模式；默认为 "function"。仅影响 DFS 的起点，不改变分析范围。
 
@@ -352,7 +352,7 @@ def get_reachable_addresses(
     - 为兼顾性能，字符串枚举与引用关系提取做了简单限速（如最多 2000 条字符串、每串至多 50 个引用点）。
     - 本函数为**最小噪音**摘要，不提供完整 CFG 或前驱/后继映射；若需全量结构，请使用更详细的图导出流程。
     """
-    start_addr_int = _resolve_address(binary_path, start_addr)
+    start_addr_int = _resolve_address(binary_path, start_addr_expr)
 
     with r2_lock:
         r2 = _open_r2pipe(binary_path)
@@ -731,17 +731,18 @@ def extract_static_memory(binary_path: str, addr_expr: int | str, size: int) -> 
     读取给定虚拟地址静态内容&所属节区/权限（flag/秘钥硬编码场景），自动补救非ASCII自动编码推断。
     Args:
         binary_path
-        addr_expr - 虚拟地址或地址表达式
+        addr_expr - 虚拟地址或地址表达式，如：0x1000，"0x1000"，"main + 0x10"
         size
     Returns:
-        dict: {
-            'content_bytes' = ['0x54', '0x72', '0x79', '0x20', '0x61', '0x67', '0x61', '0x69', '0x6e', '0x2e', '0xa', '0x0', '0x45', '0x6e', '0x74', '0x65']
-            'content' = b'Try again.\n'
-            'content_hex' = '54727920616761696e2e0a'
-            'content_string' = 'Try again.\n'
-            'section' = '2.__TEXT.__cstring'
-            'permissions' = '-r-x'
-        }
+    >>> extract_static_memory("/path/to/binary", 0x1000, 64)
+    {
+        'content_bytes' = ['0x54', '0x72', '0x79', '0x20', '0x61', '0x67', '0x61', '0x69', '0x6e', '0x2e', '0xa', '0x0', '0x45', '0x6e', '0x74', '0x65']
+        'content' = b'Try again.\n'
+        'content_hex' = '54727920616761696e2e0a'
+        'content_string' = 'Try again.\n'
+        'section' = '2.__TEXT.__cstring'
+        'permissions' = '-r-x'
+    }
     """
     addr = _resolve_address(binary_path, addr_expr)
     with r2_lock:
@@ -799,22 +800,55 @@ def extract_static_memory(binary_path: str, addr_expr: int | str, size: int) -> 
         finally:
             r2.quit()
 
-def generate_angr_template(path_to_binary: str, analysis_goal: str = "find_path") -> Dict[str, Any]:
+def generate_angr_template(path_to_binary: str, analysis_goal: str) -> Dict[str, Any]:
     """
-    给定基本参数，自动生成包含 angr.Project/State/Simgr/Explore 核心流程的 python 框架，部分步骤以 TODO 标注补充点，便于新分析任务快速“开箱即用”。
-    该模板强制仅从 config.yaml.angr_templates 加载，相应字段缺失或解析失败直接抛出异常。
+    Fetch an angr code template by analysis goal.
+
+    IMPORTANT:
+    - The returned code is a TEMPLATE, not a ready-to-run script. Do NOT copy/paste and run it as-is.
+    - Craft the final angr script using your RE findings (CFG/Strings/symbols/calling convention/I-O model).
+      At minimum, customize: target/avoid addresses or success conditions, input sizes/constraints, hooks,
+      and any arch-specific registers or function prototypes.
+
+    Args:
+    - path_to_binary (str, required): Path to the binary. This will be interpolated into the template code.
+    - analysis_goal (str, required): Exact key under `angr_templates` in the YAML (see supported values).
+
+    Supported `analysis_goal`:
+    • path_search — Reach a target (addr or condition) while optionally avoiding addresses.
+    • state_debug — Inspect/manipulate stashes and print recent constraints at breakpoints.
+    • exploration_perf — Add DFS/BFS strategies, LoopSeer/Veritesting/Unicorn, and cap state count.
+    • memory_init — Zero-fill defaults, map a scratch page, constrain bytewise secrets, light per-arch setup.
+    • input_modeling — Model stdin/argv/env/file plus targeted regs/memory in one place.
+    • function_call — Execute a function with concrete/symbolic args; collect return/outputs (arch-aware).
+    • concolic_seed — Preconstrain stdin with a seed; optionally remove preconstraints later.
+    • api_hooks — Hook libc (strcmp/strlen/printf/malloc/free) and add custom SimProcedures as needed.
+    • vuln_detection — Heuristics to flag symbolic RET or stack canary tamper under large stdin.
+    • taint_tracking — Track tainted stdin to sinks (system/execve/strcpy) with arch-specific arg0.
+    • rop_chain — Find gadgets and build system/execve chains via angrop; payload matches current arch.
+    • deobfuscation — Skip common NOPs (x86/x64 0x90, ARM64 0xD503201F) and search for “flag”.
+    • protocol_reverse — Find recv/read handlers, set (buf,size) across arches, infer fields, fuzz flips.
+    • general_analysis — Parametric harness (timeouts, techniques) returning a structured results dict.
+
+    Architecture support:
+    ARM64 (AArch64), x64 (AMD64), and x86 (32-bit) are handled where calling conventions, return registers,
+    and NOP/stack conventions matter. Templates include safe defaults and degrade gracefully when a feature
+    isn’t applicable.
+
+    Returns:
+    dict: {"template_code": "<string with the binary_path already injected>"}
     """
     import os
     import yaml
-    config_path = os.path.join(os.path.dirname(__file__), "../config.yaml")
+    config_path = os.path.join(os.path.dirname(__file__), "../angr_templates.yaml")
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
-    angr_templates = config.get("angr_templates", None)
+    angr_templates = config.get("templates", None)
     if not angr_templates:
-        raise RuntimeError("No 'angr_templates' section found in config.yaml")
+        raise RuntimeError("No 'angr templates' section found in angr_templates.yaml")
     key = analysis_goal if analysis_goal in angr_templates else "other"
     if key not in angr_templates:
-        raise RuntimeError(f"No template found for analysis_goal='{analysis_goal}' in config.yaml[angr_templates]")
+        raise RuntimeError(f"No template found for analysis_goal='{analysis_goal}' in angr_templates.yaml[angr_templates]")
     code_template = angr_templates[key]
     if "{binary_path}" not in code_template:
         raise RuntimeError("The template string must contain the '{binary_path}' placeholder")
@@ -825,7 +859,7 @@ def get_binary_info(binary_path: str) -> Dict[str, Any]:
     """
     提取二进制基础信息，供 angr/脚本初始化分析，包括架构/端序/入口/基址/PIE/strip/节区表/PLT/GOT 表。
     Args:
-        binary_path: ELF、PE或Mach-O文件路径
+        binary_path: ELF或Mach-O文件路径
     Returns:
         dict: {
             'arch': 'x86_64',
@@ -1097,9 +1131,9 @@ if __name__ == "__main__":
         print(f"ERROR: {e}")
 
     print("=" * 40)
-    print(f"[4] generate_angr_template('{bin_path}', 'find_path')")
+    print(f"[4] generate_angr_template('{bin_path}', 'path_search')")
     try:
-        res = generate_angr_template(bin_path, "find_path")
+        res = generate_angr_template(bin_path, "path_search")
         lines = res["template_code"].splitlines()
         for i, l in enumerate(lines):
             if i >= args.print_template_lines:
