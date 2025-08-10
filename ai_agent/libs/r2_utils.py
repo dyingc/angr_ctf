@@ -726,33 +726,43 @@ def get_reachable_addresses(
         finally:
             r2.quit()
 
-def extract_static_memory(binary_path: str, addr: int, size: int) -> Dict[str, Any]:
+def extract_static_memory(binary_path: str, addr_expr: int | str, size: int) -> Dict[str, Any]:
     """
     读取给定虚拟地址静态内容&所属节区/权限（flag/秘钥硬编码场景），自动补救非ASCII自动编码推断。
     Args:
         binary_path
-        addr
+        addr_expr - 虚拟地址或地址表达式
         size
     Returns:
         dict: {
-            'content': b'HXUITWOA',
-            'content_hex': '4858554954574f41',
-            'content_string': 'HXUITWOA',
-            'section': '.rodata',
-            'permissions': 'r--'
+            'content_bytes' = ['0x54', '0x72', '0x79', '0x20', '0x61', '0x67', '0x61', '0x69', '0x6e', '0x2e', '0xa', '0x0', '0x45', '0x6e', '0x74', '0x65']
+            'content' = b'Try again.\n'
+            'content_hex' = '54727920616761696e2e0a'
+            'content_string' = 'Try again.\n'
+            'section' = '2.__TEXT.__cstring'
+            'permissions' = '-r-x'
         }
     """
+    addr = _resolve_address(binary_path, addr_expr)
     with r2_lock:
-        r2 = _open_r2pipe(binary_path)
+        r2 = _open_r2pipe(binary_path, analyze=False)
         try:
             # 读 bytes
             content_bytes = r2.cmdj(f"pxj {size} @ {addr}")
             if not content_bytes or not isinstance(content_bytes, list):
                 content_bytes = []
             # auto-truncate trailing 0x00
-            cut_bytes = bytes([b for b in content_bytes if isinstance(b, int)])  # 保守转换
-            while cut_bytes and cut_bytes[-1] == 0:
-                cut_bytes = cut_bytes[:-1]
+            cut_bytes = []
+            content_hex = ""
+            for c in content_bytes:
+                if c == 0:
+                    break
+                cut_bytes.append(c)
+            if cut_bytes:
+                cut_bytes = bytes([b for b in cut_bytes if isinstance(b, int)])  # 保守转换
+                content_hex = cut_bytes.hex()
+            else:
+                cut_bytes = b""
 
             # 尝试多种方式解读
             try:
@@ -766,23 +776,20 @@ def extract_static_memory(binary_path: str, addr: int, size: int) -> Dict[str, A
                     except Exception:
                         s = ""
 
-            content_hex = cut_bytes.hex()
-
             # 节区 & 权限
-            section = ""
-            permissions = ""
+            section = None
+            permissions = None
             sections = r2.cmdj("iSj")
-            found = False
             for sec in sections or []:
                 vaddr = sec.get("vaddr", 0)
                 vsize = sec.get("size", 0)
                 if vaddr <= addr < vaddr + vsize:
                     section = sec.get("name", "")
                     permissions = sec.get("perm", "")
-                    found = True
                     break
 
             return {
+                "content_bytes": [hex(h) for h in content_bytes],
                 "content": cut_bytes,
                 "content_hex": content_hex,
                 "content_string": s,
@@ -1081,6 +1088,8 @@ if __name__ == "__main__":
                 break
         if str_addr is None:
             raise ValueError("No string found in .rodata/cstring")
+        res = extract_static_memory(bin_path, '0x1000006b4 + 0x30', 0x10)
+        res = extract_static_memory(bin_path, '0x1000006b4 + 0x31', 0x10)
         res = extract_static_memory(bin_path, str_addr, 16)
         print(f"String chosen: {str_val} @ 0x{str_addr:x}")
         print(json.dumps(res, indent=2, default=str))
