@@ -18,11 +18,11 @@ fi
 echo "开始构建镜像..."
 if command -v podman &> /dev/null; then
     echo "使用Podman构建..."
-    podman build -t $IMAGE_NAME .
+    podman build --platform=linux/amd64 -t $IMAGE_NAME .
     BUILD_CMD="podman"
 elif command -v docker &> /dev/null; then
     echo "使用Docker构建..."
-    docker build -t $IMAGE_NAME .
+    docker build --platform=linux/amd64 -t $IMAGE_NAME .
     BUILD_CMD="docker"
 else
     echo "错误: 未找到podman或docker命令"

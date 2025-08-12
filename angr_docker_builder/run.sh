@@ -23,7 +23,7 @@ $RUNTIME rm $CONTAINER_NAME 2>/dev/null || true
 
 # 运行新容器
 echo "启动新容器..."
-$RUNTIME run -it --rm \
+$RUNTIME run -it --platform=linux/amd64 --rm \
     --name $CONTAINER_NAME \
     -v "$(pwd)":/workspace \
     --workdir /workspace \
