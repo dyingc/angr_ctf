@@ -20,6 +20,16 @@
             "args": "${command:pickArgs}"
         },
         {
+        "name": "Debug current test file (pytest)",
+        "type": "debugpy",
+        "request": "launch",
+        "module": "pytest",
+        // 运行光标所在文件；也可以通过 --maxfail=1 让失败即停
+        "args": ["${file}", "-vv"],
+        "justMyCode": false,
+        "console": "integratedTerminal"
+        },
+        {
             "name": "CTF 00 solution",
             "type": "debugpy",
             "request": "launch",

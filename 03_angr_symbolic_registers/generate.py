@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, random, os, tempfile, jinja2
+import sys, random, os, tempfile, jinja2, platform
 
 def randomly_modify(var):
   """
@@ -78,14 +78,29 @@ def generate(argv):
     temp.write(c_code) # 将生成的C代码写入临时文件。
     temp.seek(0) # 将文件指针重置到开头，以防万一。
 
-    # 构建并执行 `gcc` 命令来编译C代码。
-    # `-fno-pie -no-pie -m32`: 编译选项，通常用于禁用位置无关可执行文件 (PIE) 并生成32位二进制文件。
-    # 这在CTF或逆向工程场景中很常见，可以简化分析，因为二进制文件的加载地址是固定的。
-    # `output_file`: 最终生成的可执行文件路径。
-    # `temp.name`: 临时C源文件的路径。
-    # `2>/dev/null`: 将 `gcc` 的标准错误输出重定向到 `/dev/null`，抑制编译时的警告或错误信息，
-    # 使得脚本输出更简洁。
-    os.system('gcc -fno-pie -no-pie -m32 -o ' + output_file + ' ' + temp.name + ' 2>/dev/null')
+    # 根据架构选择合适的编译参数
+    arch = platform.machine()
+    if arch.startswith("x86"):
+      # 适用于 x86_64 架构的编译命令
+      # -fno-pie: 禁用位置无关代码生成（Piece）。
+      # -no-pie: 禁用位置无关可执行文件生成。(radare2 / rizin 的`pdf`命令显示的是rebased地址)
+      # -fcf-protection=none: 禁用控制流保护（如 CET (Control-flow Enforcement Technology)）
+      # -fno-stack-protector: 禁用栈保护
+      # -O0: 无优化，保持源码与汇编的完美对应关系
+      # -g: 生成调试符号信息（DWARF格式），支持 GDB 源码级调试
+      # -m32: 生成 32 位可执行文件。
+      compile_cmd = 'gcc -fno-pie -no-pie -fcf-protection=none -fno-stack-protector -m32 -O0 -g -o ' + output_file + ' ' + temp.name
+    elif arch == 'arm64':
+      # 适用于 arm64 架构的编译命令 (Apple Silicon)
+      compile_cmd = f'gcc -fno-stack-protector -O0 -g -o {output_file + "_arm"} {temp.name}'
+    else:
+      # 其他架构的默认编译命令
+      compile_cmd = f'gcc -fno-stack-protector -O0 -g -o {output_file + "_other"} {temp.name}'
+
+    # 使用 gcc 编译 C 代码。
+    # -o output_file: 指定输出的可执行文件名。
+    # temp.name: 指定要编译的源文件（临时 C 文件）。
+    os.system(compile_cmd)
 
   # 编译完成后，临时文件不再需要。
   # 注意：由于 `delete=False`，这里没有显式地删除临时文件。

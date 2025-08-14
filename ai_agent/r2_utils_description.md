@@ -1,6 +1,6 @@
-# `r2_utils` Library Documentation
+# `rz_utils` Library Documentation
 
-This document describes the functions available in the `r2_utils.py` library, which provides Python wrappers around `radare2` for binary analysis.
+This document describes the functions available in the `rz_utils.py` library, which provides Python wrappers around `Rizin` for binary analysis.
 
 ---
 
@@ -21,14 +21,14 @@ Generates a call graph for a binary. It can create a global graph for the entire
 
 **Example Usage:**
 ```python
-from ai_agent import r2_utils
+from ai_agent import rz_utils
 
 # Get global call graph
-global_graph = r2_utils.get_call_graph("/path/to/your/binary")
+global_graph = rz_utils.get_call_graph("/path/to/your/binary")
 print(global_graph["nodes"])
 
 # Get call graph for the 'main' function with a depth of 5
-main_graph = r2_utils.get_call_graph("/path/to/your/binary", function_name="main", depth=5)
+main_graph = rz_utils.get_call_graph("/path/to/your/binary", function_name="main", depth=5)
 print(main_graph["edges"])
 ```
 
@@ -52,9 +52,9 @@ Retrieves the basic blocks of a function's Control Flow Graph (CFG), including t
 
 **Example Usage:**
 ```python
-from ai_agent import r2_utils
+from ai_agent import rz_utils
 
-blocks = r2_utils.get_cfg_basic_blocks("/path/to/your/binary", function_name="main")
+blocks = rz_utils.get_cfg_basic_blocks("/path/to/your/binary", function_name="main")
 for block in blocks:
     print(f"Block at {hex(block['offset'])} has successors: {[hex(s) for s in block['succ']]}")
 ```
@@ -75,9 +75,9 @@ Extracts all printable strings from a binary file that meet a minimum length req
 
 **Example Usage:**
 ```python
-from ai_agent import r2_utils
+from ai_agent import rz_utils
 
-strings = r2_utils.get_strings("/path/to/your/binary", min_length=8)
+strings = rz_utils.get_strings("/path/to/your/binary", min_length=8)
 for s in strings:
     print(f"Found string: '{s['string']}' at address {hex(s['vaddr'])}")
 ```
@@ -103,10 +103,10 @@ Finds all references in the code to strings that match a given query (substring 
 
 **Example Usage:**
 ```python
-from ai_agent import r2_utils
+from ai_agent import rz_utils
 
 # Find references to any string containing "password"
-refs = r2_utils.search_string_refs("/path/to/your/binary", query="password")
+refs = rz_utils.search_string_refs("/path/to/your/binary", query="password")
 for ref_info in refs:
     print(f"String '{ref_info['string']}' is referenced at:")
     for r in ref_info['refs']:
@@ -118,7 +118,7 @@ for ref_info in refs:
 ### 5. `emulate_function`
 
 **Purpose:**
-Performs a step-by-step emulation of a function using radare2's ESIL (Evaluable String Intermediate Language) and captures the state at each step. The emulation runs in a separate thread to enforce a timeout.
+Performs a step-by-step emulation of a function using Rizin's ESIL (Evaluable String Intermediate Language) and captures the state at each step. The emulation runs in a separate thread to enforce a timeout.
 
 **Parameters:**
 - `binary_path` (str): The absolute path to the binary file.
@@ -134,9 +134,9 @@ Performs a step-by-step emulation of a function using radare2's ESIL (Evaluable 
 
 **Example Usage:**
 ```python
-from ai_agent import r2_utils
+from ai_agent import rz_utils
 
-result = r2_utils.emulate_function("/path/to/your/binary", function_name="calculate_key", max_steps=50)
+result = rz_utils.emulate_function("/path/to/your/binary", function_name="calculate_key", max_steps=50)
 if "error" in result:
     print(f"Emulation failed: {result['error']}")
 else:

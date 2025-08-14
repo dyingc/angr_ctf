@@ -451,3 +451,6 @@ analysis_report*
 # ============================================================================
 
 # Add any project-specific patterns below this line
+
+# VS Code workspace settings
+.clinerules

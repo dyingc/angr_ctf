@@ -12,5 +12,13 @@ dependencies = [
     "mcp[cli]>=1.11.0",
     "pwntools>=4.14.1",
     "pydantic>=2.11.7",
-    "r2pipe>=1.9.6",
+    "pytest>=8.0.0", # 添加 pytest 依赖
+    "pyyaml>=6.0.2",
+    "rzpipe>=0.6.2",
 ]
+
+[tool.setuptools.packages.find]
+include = ["ai_agent", "00_angr_find", "01_angr_avoid", "02_angr_find_condition", "03_angr_symbolic_registers", "04_angr_symbolic_stack", "05_angr_symbolic_memory", "06_angr_symbolic_dynamic_memory", "07_angr_symbolic_file", "08_angr_constraints", "09_angr_hooks", "10_angr_simprocedures", "11_angr_sim_scanf", "12_angr_veritesting", "13_angr_static_binary", "14_angr_shared_library", "15_angr_arbitrary_read", "16_angr_arbitrary_write", "17_angr_arbitrary_jump", "xx_angr_segfault"]
+
+[tool.setuptools.package-data]
+ai_agent = ["config.yaml"]

@@ -31,18 +31,17 @@ def _open_r2pipe(binary_path: str) -> r2pipe.open:
     r2.cmd("e scr.color=0; aaa")  # Disable color, perform auto-analysis
     return r2
 
-def get_call_graph(binary_path: str, function_name: Optional[str] = None, depth: int = 3) -> Dict[str, Any]:
+def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Generates a call graph for a binary.
 
-    If a function_name is provided, it generates a localized call graph for that
-    function up to a specified depth. Otherwise, it generates a global call graph
+    If a function_name is provided, it generates a localized call graph
+    for that function. Otherwise, it generates a global call graph
     for the entire binary.
 
     Args:
         binary_path: The path to the binary file.
         function_name: Optional. The name of the function to start the graph from.
-        depth: The maximum depth of the call graph when a function_name is given.
 
     Returns:
         A dictionary containing 'nodes' and 'edges' of the call graph.
@@ -52,13 +51,11 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None, depth:
         r2 = _open_r2pipe(binary_path)
         try:
             if function_name:
-                # Get call graph for a specific function with depth
-                # agcj: call graph with depth, JSON output
-                graph_json = r2.cmd(f"agcj {depth} @ {function_name}")
+                # Get call graph for a specific function, JSON output
+                graph_json = r2.cmdj(f"agcj @ {function_name}")
             else:
-                # Get global call graph
-                # agCj: global call graph, JSON output
-                graph_json = r2.cmd("agCj")
+                # Get global call graph, JSON output
+                graph_json = r2.cmdj("agCj")
 
             if not graph_json:
                 return {"nodes": [], "edges": []}
@@ -148,14 +145,12 @@ def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[str,
             blocks_json = r2.cmd(f"afbj @ {function_name}")
             if not blocks_json or blocks_json.strip() == "[]":
                 return []
+            blocks_data = json.loads(blocks_json)
 
-            try:
-                blocks_data = json.loads(blocks_json)
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Failed to parse basic blocks JSON: {e}")
+            edges_data = r2.cmdj(f"agj @ {function_name}")
 
-            # Process blocks and determine successors directly from afbj data
-            formatted_blocks = []
+            # Map block addresses to their data for easier lookup
+            block_map = {b["addr"]: b for b in blocks_data}
 
             for block in blocks_data:
                 # Determine block type based on jump/fail fields
@@ -399,11 +394,22 @@ def emulate_function(binary_path: str, function_name: str, max_steps: int = 100,
         future = executor.submit(_emulate_function_target, r2, function_name, max_steps, result_queue)
 
         try:
+<<<<<<< HEAD:ai_agent/r2_utils.py
             # Block until the result is available or timeout occurs.
             return result_queue.get(timeout=timeout)
         except queue.Empty:
             # This is the primary expected exception: the emulation took too long.
             return {"error": f"Emulation timed out after {timeout} seconds."}
+=======
+            result = result_queue.get(timeout=timeout)
+            if "error" in result:
+                return {"success": False, "error": result["error"]}
+            return result
+        except queue.Empty:
+            return {"success": False, "error": f"Emulation timed out after {timeout} seconds."}
+        except Exception as e:
+            return {"success": False, "error": f"An unexpected error occurred: {str(e)}"}
+>>>>>>> 34e06c358b4c0752dcc59c44a86c6f018d550603:ai_agent/libs/r2_utils.py
         finally:
             # Ensure the thread and r2pipe are cleaned up regardless of outcome.
             future.cancel()
