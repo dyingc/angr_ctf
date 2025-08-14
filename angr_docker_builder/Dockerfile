@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y \
     ltrace \
     bsdmainutils \
     util-linux \
+    jq \
     # 网络和下载工具
     curl \
     wget \

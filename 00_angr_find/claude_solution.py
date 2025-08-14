@@ -9,17 +9,17 @@ import claripy
 
 def solve_with_angr():
     # Load the binary
-    binary_path = "/Users/yingdong/VSCode/angr/angr_ctf/00_angr_find/00_angr_find_arm"
+    binary_path = "00_angr_find/00_angr_find"
     project = angr.Project(binary_path, auto_load_libs=False)
 
     # Define target addresses based on disassembly analysis
     # Success path: where "Good Job" is printed
-    find_addr = 0x100000664  # Address where program branches to print "Good Job"
+    find_addr = 0x080492bd  # Address where program branches to print "Good Job"
 
     # Failure paths: where "Try again" is printed
     avoid_addrs = [
-        0x100000654,  # "Try again" in main function
-        0x10000049c   # "Try again" in complex_function (if invalid input)
+        0x80492ab,  # "Try again" in main function
+        0x80491d6   # "Try again" in complex_function (if invalid input)
     ]
 
     print(f"Target binary: {binary_path}")
@@ -27,21 +27,25 @@ def solve_with_angr():
     print(f"Avoid addresses (Try again): {[hex(addr) for addr in avoid_addrs]}")
 
     # Create initial state at program entry
-    initial_state = project.factory.entry_state()
+    initial_state = project.factory.entry_state(add_options={
+        angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
+        angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS})
 
     # Create symbolic input for the password (8 characters + null terminator)
     password_length = 8
     password = claripy.BVS("password", password_length * 8)  # 8 bytes = 64 bits
 
     # Constrain each character to be a uppercase letter (A-Z: 0x41-0x5A)
-    for i in range(password_length):
-        char = password.get_byte(i)
-        initial_state.solver.add(char >= 0x41)  # >= 'A'
-        initial_state.solver.add(char <= 0x5A)  # <= 'Z'
+    # for i in range(password_length):
+    #     char = password.get_byte(i)
+    #     initial_state.solver.add(char >= 0x41)  # >= 'A'
+    #     initial_state.solver.add(char <= 0x5A)  # <= 'Z'
 
     # Store the symbolic password in stdin
-    initial_state.posix.stdin.store(0, password)
-    initial_state.posix.stdin.store(password_length, claripy.BVV(0x0a, 8))  # newline
+    # initial_state.posix.stdin.name = 'stdio'
+    # initial_state.posix.stdin.content = password
+    # initial_state.posix.stdin.store(0, password)
+    # initial_state.posix.stdin.store(password_length, claripy.BVV(0x0a, 8))  # newline
 
     # Create simulation manager
     simulation_manager = project.factory.simulation_manager(initial_state)
