@@ -14,7 +14,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 import asyncio
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 from typing import List, Optional, Any, Dict, Literal
 
 # Import the functions and their input models from the existing modules
@@ -28,7 +28,7 @@ from ai_agent.reverse_engineering import (
     InternalInferenceToolInput
 )
 from ai_agent.core import call_graph, cfg, strings, emulation
-from ai_agent.esil_sample.emulation import (
+from ai_agent.samples.esil_sample.emulation import (
     emulate_region as emulate_region_impl,
     StopConditionType,
 )

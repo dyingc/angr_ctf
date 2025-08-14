@@ -6,10 +6,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "angr>=9.2.162",
+    "fastmcp>=2.11.3",
     "ipython>=8.37.0",
     "jinja2>=3.1.6",
     "langchain-core>=0.3.68",
-    "mcp[cli]>=1.11.0",
     "pwntools>=4.14.1",
     "pydantic>=2.11.7",
     "pytest>=8.0.0", # 添加 pytest 依赖
