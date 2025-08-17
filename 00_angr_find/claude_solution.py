@@ -26,34 +26,42 @@ def solve_with_angr():
     print(f"Find address (Good Job): {hex(find_addr)}")
     print(f"Avoid addresses (Try again): {[hex(addr) for addr in avoid_addrs]}")
 
-    # Create initial state at program entry
-    initial_state = project.factory.entry_state(add_options={
-        angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
-        angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS})
-
     # Create symbolic input for the password (8 characters + null terminator)
     password_length = 8
     password = claripy.BVS("password", password_length * 8)  # 8 bytes = 64 bits
+    # password = claripy.Concat(password, terminator)  # Append newline
+    sym_password = angr.SimPackets(name='stdio', content=[password])
 
-    # Constrain each character to be a uppercase letter (A-Z: 0x41-0x5A)
-    # for i in range(password_length):
-    #     char = password.get_byte(i)
-    #     initial_state.solver.add(char >= 0x41)  # >= 'A'
-    #     initial_state.solver.add(char <= 0x5A)  # <= 'Z'
+    # Create initial state at program entry
+    initial_state = project.factory.entry_state(
+        # addr = start_addr,
+        # stack_end = None, # The end of the stack (i.e., the byte after the last valid stack address)
+        # stack_size = 1024 * 1024 * 8,
+        stdin = sym_password,
+        add_options={
+            angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
+            angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS}
+    )
 
-    # Store the symbolic password in stdin
-    # initial_state.posix.stdin.name = 'stdio'
-    # initial_state.posix.stdin.content = password
-    # initial_state.posix.stdin.store(0, password)
-    # initial_state.posix.stdin.store(password_length, claripy.BVV(0x0a, 8))  # newline
+    # Constrain each character to be visible character
+    for i in range(password_length):
+        char = password.get_byte(i)
+        initial_state.solver.add(char >= 0x20)  # >= ' '
+        initial_state.solver.add(char <= 0x7e)  # <= '~'
 
     # Create simulation manager
-    simulation_manager = project.factory.simulation_manager(initial_state)
+    simulation_manager = project.factory.simulation_manager(initial_state, veritesting=False)
+    # simulation_manager = project.factory.simgr(initial_state)
 
     print("\nStarting symbolic execution...")
 
     # Explore paths to find the target and avoid failure paths
-    simulation_manager.explore(find=find_addr, avoid=avoid_addrs)
+    expected_output = b'Good Job.'
+    avoid_output = b'Try again.'
+
+    # simulation_manager.explore(find=find_addr, avoid=avoid_addrs)
+    simulation_manager.explore(find=lambda s: expected_output in s.posix.dumps(1),
+                               avoid=lambda s: avoid_output in s.posix.dumps(1))
 
     # Check if we found a solution
     if simulation_manager.found:

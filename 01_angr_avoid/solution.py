@@ -1,5 +1,5 @@
 import angr
-from angr import SimFileStream
+from angr import SimPackets
 import claripy
 import sys
 import time
@@ -23,10 +23,7 @@ def main(argv):
   # SYMBOL_FILL_UNCONSTRAINED_MEMORY: 当访问未初始化的内存时，Angr 会用符号值填充它，而不是引发错误。这对于探索未知输入非常有用。
   # SYMBOL_FILL_UNCONSTRAINED_REGISTERS: 类似地，对于未初始化的寄存器，Angr 会用符号值填充它们。
   initial_state = project.factory.entry_state(
-      stdin = SimFileStream(name='stdin',
-                            content=symbolic_password,
-                            size=password_length,
-                            has_end=True),
+      stdin = SimPackets(name='stdin', content=[symbolic_password]),
       add_options = { angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
                       angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS}
   )
@@ -65,17 +62,18 @@ def main(argv):
 
   # `print_good_address` 是一个在二进制文件中，当程序执行到这里时，表示找到了“好”路径（即正确的输入）。
   # 这个地址通常对应于 `maybe_good()` 函数的入口点或其内部的某个关键点。
-  print_good_address = 0x08049260 # [0x08049258]
+  print_good_address = 0x08048860 # The addr of the code that refers to string "Good Job."
 
   # `will_not_succeed_address` 是一个在二进制文件中，当程序执行到这里时，表示进入了“坏”路径（即错误的输入）。
   # 这个地址通常对应于 `avoid_me()` 函数的入口点或其内部的某个关键点。
-  will_not_succeed_address = [0x08049226] # , 0x0804926a]
+  will_not_succeed_address = [0x08048810] # 0x08048810: start addr of "avoid_me"
 
   # 调用 `explore` 方法开始符号执行。
   # `find`: 指定 Angr 应该尝试到达的目标地址。一旦找到一个到达此地址的状态，它就会被放入 `simulation.found` 列表中。
   # `avoid`: 指定 Angr 应该避免到达的地址。任何到达这些地址的状态都会被标记为 `avoided`，并且不再继续探索。
   start = time.time()
-  simulation.explore(find=print_good_address, avoid=will_not_succeed_address)
+  simulation.explore(find=lambda s: b"Good" in s.posix.dumps(sys.stdout.fileno()),
+                     avoid=will_not_succeed_address)
   end = time.time()
   print(f"Exploration time: {format_time(end - start)}")
 
