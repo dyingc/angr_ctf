@@ -60,6 +60,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pytest" },
     { name = "pyyaml" },
+    { name = "r2pipe" },
     { name = "rzpipe" },
 ]
 
@@ -74,6 +75,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.11.7" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "pyyaml", specifier = ">=6.0.2" },
+    { name = "r2pipe", specifier = ">=1.9.6" },
     { name = "rzpipe", specifier = ">=0.6.2" },
 ]
 
@@ -2077,6 +2079,12 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/14/0d/e2c3b43bbce3cf6bd97c840b46088a3031085179e596d4929729d8d68270/PyYAML-6.0.2-cp313-cp313-win32.whl", hash = "sha256:bc2fa7c6b47d6bc618dd7fb02ef6fdedb1090ec036abab80d4681424b84c1183", size = 140527, upload-time = "2024-08-06T20:33:03.001Z" },
     { url = "https://files.pythonhosted.org/packages/fa/de/02b54f42487e3d3c6efb3f89428677074ca7bf43aae402517bc7cca949f3/PyYAML-6.0.2-cp313-cp313-win_amd64.whl", hash = "sha256:8388ee1976c416731879ac16da0aff3f63b286ffdd57cdeb95f3f2e085687563", size = 156446, upload-time = "2024-08-06T20:33:04.33Z" },
 ]
+
+[[package]]
+name = "r2pipe"
+version = "1.9.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/1c/674d70acdc1a03099db8728f8e5154b2a6c686e1e7a261dd66221777768b/r2pipe-1.9.6.tar.gz", hash = "sha256:3804b762bd4298c32e8443ffb513bd6007586777a689bd21b97977feb8cb2c99", size = 23687, upload-time = "2025-06-16T18:29:15.411Z" }
 
 [[package]]
 name = "referencing"
