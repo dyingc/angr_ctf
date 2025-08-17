@@ -1,28 +1,269 @@
 templates:
   # 1) Path search (merges: find_path + avoid)
   path_search: |
-    ## Path search: reach target and/or avoid list (merged; arch-agnostic)
-    import angr, claripy
-    p = angr.Project(r"{binary_path}", auto_load_libs=False)
+    #!/usr/bin/env python3
 
-    start = p.entry
-    find_addr = 0x401234          # or: lambda s: b"SUCCESS" in s.posix.dumps(1) - TODO
-    avoid_addrs = [0x401000]      # list or callable - TODO
+    import angr
+    import claripy
+    import sys
 
-    s = p.factory.entry_state(addr=start)
-    sm = p.factory.simulation_manager(s)
-    sm.explore(find=find_addr, avoid=avoid_addrs)
+    # ============================================================================
+    # CONFIGURATION SECTION
+    # ============================================================================
 
-    if sm.found:
-        st = sm.found[0]
-        if st.solver.satisfiable():
-            try: print(b"stdin:", st.posix.dumps(0))
-            except: pass
-            out = st.posix.dumps(1)
-            if out: print(b"stdout:", out)
-            print("reached:", hex(st.addr))
-    else:
-        print("no path; deadended:", len(sm.deadended), "active:", len(sm.active))
+    binary_path = r"{binary_path}"  # Path to target binary
+
+    # Finding TARGET addresses (where you want to reach):
+    # 1. Use a disassembler (IDA, Ghidra, radare2, objdump)
+    # 2. Look for success indicators:
+    #    - String references: "Success", "Good job", "Flag:", etc.
+    #    - Function calls: puts("Win!"), printf("Correct")
+    #    - Return values: return 0 (success) vs return 1 (failure)
+
+    # Finding AVOID addresses (paths to skip):
+    # 1. Look for failure indicators:
+    #    - String references: "Try again", "Wrong", "Invalid", "Access denied"
+    #    - Function calls: exit(1), puts("Failed"), abort()
+    #    - Error handling: perror(), fprintf(stderr, ...)
+    # 2. Identify expensive/infinite loops:
+    #    - Sleep/delay functions: sleep(), usleep()
+    #    - Decoy functions with long computations
+    #    - Anti-debugging checks: ptrace(), signal handlers
+    # 3. Common avoid patterns:
+    #    - The address right before exit(1) calls
+    #    - Beginning of error handling blocks
+    #    - Jump targets that lead to failure messages
+
+    # Option 1: Direct address targeting
+    find_addr = 0x401234          # Address where success path begins
+    avoid_addrs = [0x401000]      # List of failure addresses
+
+    # Option 2: Output-based targeting (more flexible)
+    # find_addr = lambda s: b"SUCCESS" in s.posix.dumps(1)  # stdout contains SUCCESS
+    # avoid_addrs = lambda s: b"FAIL" in s.posix.dumps(1)   # stdout contains FAIL
+
+    # ============================================================================
+    # SYMBOLIC INPUT CONFIGURATION
+    # ============================================================================
+
+    # When to use different input methods:
+
+    # Method 1: Direct stdin (simple, for reading with scanf/gets/fgets)
+    # Best for: Programs that read input once at start
+    use_direct_stdin = False
+
+    # Method 2: Symbolic variables with SimPackets (more control)
+    # Best for: Complex input constraints, multiple inputs, specific formats
+    use_symbolic_packets = True
+
+    # Method 3: Arguments/environment (for argv/argc programs)
+    # Best for: Command-line argument processing
+    use_argv = False
+
+    # ============================================================================
+    # MAIN EXECUTION
+    # ============================================================================
+
+    def main():
+        # Load binary (auto_load_libs=False speeds up analysis for CTF binaries)
+        p = angr.Project(binary_path, auto_load_libs=False)
+
+        # Choose entry point
+        start = p.entry  # Program entry point
+        # start = 0x401000  # Or specific address to start from
+
+        # common add toptions
+        add_options = {
+                    angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
+                    angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS
+        }
+
+        # Create initial state based on input method
+        if use_symbolic_packets:
+            # Create symbolic input with constraints
+            input_length = 32  # Adjust based on program expectations
+            sym_input = claripy.BVS("input", input_length * 8)  # Bits = bytes * 8
+
+            # Method 2a: Using SimPackets for structured input - DO NOT use SimFileStream or SimFile for the `stdin`
+            sym_packets = angr.SimPackets(name='stdio', content=[sym_input])
+            s = p.factory.entry_state(
+                addr=start,
+                stdin=sym_packets,
+                add_options=add_options
+            )
+
+            # Add constraints for printable ASCII (need to adjust based on real requirements)
+            for i in range(input_length):
+                byte = sym_input.get_byte(i)
+                s.solver.add(byte >= 0x20)  # Space
+                s.solver.add(byte <= 0x7e)  # Tilde
+                # For alphanumeric only:
+                # s.solver.add(claripy.Or(
+                #     claripy.And(byte >= ord('a'), byte <= ord('z')),
+                #     claripy.And(byte >= ord('A'), byte <= ord('Z')),
+                #     claripy.And(byte >= ord('0'), byte <= ord('9'))
+                # ))
+
+        elif use_direct_stdin:
+            # Method 1: Simple stdin without pre-constraints
+            s = p.factory.entry_state(addr=start, add_options=add_options)
+            # Input will be symbolic when program reads stdin
+
+        elif use_argv:
+            # Method 3: Command-line arguments
+            argv_sym = [binary_path]  # argv[0] is program name
+            for i in range(1, 3):  # Add symbolic argv[1], argv[2], etc.
+                arg = claripy.BVS(f"argv_{i}", 8 * 16)  # 16 bytes per arg
+                argv_sym.append(arg)
+            s = p.factory.entry_state(addr=start, args=argv_sym, add_options=add_options)
+
+        else:
+            # Basic state without special input handling
+            s = p.factory.entry_state(addr=start, add_options=add_options)
+
+        # Create simulation manager
+        sm = p.factory.simulation_manager(s)
+
+        # ============================================================================
+        # PATH EXPLORATION
+        # ============================================================================
+
+        print(f"Starting symbolic execution...")
+        print(f"Target: {hex(find_addr) if isinstance(find_addr, int) else 'lambda function'}")
+        print(f"Avoiding: {[hex(a) for a in avoid_addrs] if isinstance(avoid_addrs, list) else 'lambda function'}")
+
+        # Explore with optional parameters
+        sm.explore(
+            find=find_addr,
+            avoid=avoid_addrs,
+            # Optional parameters:
+            # n=100,              # Max number of states to find
+            # num_find=1,         # Stop after finding this many
+            # avoid_priority=True # Prioritize avoiding over finding
+        )
+
+        # ============================================================================
+        # RESULT EXTRACTION
+        # ============================================================================
+
+        if sm.found:
+            print(f"\n✅ SUCCESS! Found {len(sm.found)} solution(s)")
+
+            for i, st in enumerate(sm.found):
+                print(f"\n--- Solution {i+1} ---")
+
+                # Check if constraints are satisfiable
+                if st.solver.satisfiable():
+                    # Extract stdin input. This was actually read from stdin during execution which may include
+                    # partial reads or multiple reads. It reflects the actual I/O operations that occurred
+                    try:
+                        stdin_data = st.posix.dumps(sys.stdin.fileno())
+                        print(f"stdin: {stdin_data}")
+                        # For printable strings:
+                        # print(f"stdin (ascii): {stdin_data.decode('ascii', errors='ignore')}")
+                    except Exception as e:
+                        print(f"Could not extract stdin: {e}")
+
+                    # Extract stdout output
+                    try:
+                        stdout_data = st.posix.dumps(sys.stdout.fileno())
+                        if stdout_data:
+                            print(f"stdout: {stdout_data}")
+                    except:
+                        pass
+
+                    # If using symbolic variables, extract their values
+                    # This is the full input buffer you created and may include bytes that were never actually read by the program
+                    if use_symbolic_packets:
+                        try:
+                            concrete_input = st.solver.eval(sym_input, cast_to=bytes)
+                            print(f"Symbolic input value: {concrete_input}")
+                            print(f"As string: {concrete_input.decode('ascii', errors='ignore')}")
+                        except:
+                            pass
+
+                    # Extract register values if needed
+                    # print(f"eax: {st.regs.eax}")
+                    # print(f"rdi: {st.regs.rdi}")  # x64
+
+                    # Extract memory values if needed
+                    # mem_val = st.memory.load(0x404000, 4)  # Read 4 bytes at address
+                    # print(f"Memory at 0x404000: {st.solver.eval(mem_val, cast_to=bytes)}")
+
+                    print(f"Final address reached: {hex(st.addr)}")
+                else:
+                    print(f"Solution {i+1} has unsatisfiable constraints")
+
+        else:
+            print("\n❌ No solution found")
+            print(f"Deadended states: {len(sm.deadended)}")
+            print(f"Active states: {len(sm.active)}")
+            print(f"Avoided states: {len(sm.avoid)}")
+
+            # Debug information
+            if sm.deadended:
+                print("\nDeadended states (first 3):")
+                for st in sm.deadended[:3]:
+                    print(f"  - Stopped at: {hex(st.addr)}")
+                    # Check why it deadended
+                    if st.addr == 0:
+                        print("    (Likely segfault or exit)")
+
+            if sm.active:
+                print("\nActive states still exploring (first 3):")
+                for st in sm.active[:3]:
+                    print(f"  - Currently at: {hex(st.addr)}")
+
+    # ============================================================================
+    # COMMON PITFALLS AND SOLUTIONS
+    # ============================================================================
+
+    """
+    PITFALLS TO AVOID:
+
+    1. Input Length Issues (CRITICAL for SimPackets):
+    - When using SimPackets: Length MUST match exactly what program expects
+        * If program expects 12 bytes, set input_length = 12 (not 11, not 13!)
+        * Wrong length = program never reaches success path or crashes
+    - Finding correct length:
+        * Look for: fgets(buf, 12, stdin), read(0, buf, 12), char password[12]
+        * Try direct stdin first to discover length, then switch to SimPackets
+        * Or iterate: for length in range(8, 20): try each
+    - Direct stdin doesn't have this limitation (creates bytes on-demand)
+
+    2. Missing Constraints:
+    - Programs often expect specific input formats
+    - Common constraints needed:
+        * Printable ASCII: (byte >= 0x20) & (byte <= 0x7e)
+        * Alphanumeric only: [a-zA-Z0-9]
+        * Hex string: [0-9a-f]
+        * Newline terminated: last byte = 0x0a
+    - Add constraints BEFORE exploration starts
+
+    3. State Explosion:
+    - Too many paths = slow/OOM
+    - Solutions:
+        * Use more avoid addresses (especially loops)
+        * Limit depth: sm.explore(find=target, n=1000)
+        * Increase step timeout: sm.explore(find=target, step_func=lambda sm: sm.step(timeout=10))
+        * Use veritesting: simulation_manager(s, veritesting=True)
+
+    4. Library Functions:
+    - angr may not handle complex libc functions well (rand, printf with %n, etc.)
+    - Solutions:
+        * Hook functions: p.hook(addr, angr.SIM_PROCEDURES['libc']['strlen']())
+        * Use unicorn engine: add_options={angr.options.UNICORN}
+        * Write custom simprocedures for problematic functions
+
+    5. Architecture/Calling Convention:
+    - Check binary arch
+    - 32-bit vs 64-bit have different register usage
+    - ARM/MIPS have different conventions than x86
+    - Solution: Let angr auto-detect, or specify: angr.Project(binary, arch='i386')
+    """
+
+    if __name__ == "__main__":
+        main()
 
   # 2) State & debugging (merges: stash_management + debugging_symbolic)
   state_debug: |
