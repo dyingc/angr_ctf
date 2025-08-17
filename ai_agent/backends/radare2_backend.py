@@ -1,3 +1,4 @@
+import sys
 from .base import BinaryAnalysisBackend
 from typing import Dict, Any, List, Optional
 # 直接复用现有实现
@@ -56,17 +57,17 @@ class Radare2Backend(BinaryAnalysisBackend):
         # 复用示例中的逻辑
         r2 = impl._open_r2pipe(binary_path)
         try:
-            functions = r2.cmd("aflj")
-            if not functions or not isinstance(functions, str):
-                return []
-            func_list = impl.json.loads(functions)
+            func_list = r2.cmdj("aflj")
             if exclude_builtins:
                 # 示例中仅过滤 sym. 开头的
                 func_list = [f for f in func_list if not f["name"].startswith("sym.imp.")]
             shortented_func_list = []
             for func in func_list:
+                if func.get('addr', func.get('offset', 0)) == 0:
+                    print(f"Skipping function with missing address: {func}", file=sys.stderr)
+                    continue
                 shortented_func = {
-                    "offset": func["addr"],
+                    "offset": func.get('addr', func.get('offset')),
                     "name": func["name"],
                     "size": func["realsz"],
                     "file": func.get("file", ""),

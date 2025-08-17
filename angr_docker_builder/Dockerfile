@@ -114,32 +114,11 @@ ENV PATH="/home/angr/.local/bin:$PATH"
 RUN bash -c "source /home/angr/.venv/bin/activate && \
     pip install --upgrade pip setuptools wheel"
 
-# 安装MCP相关依赖
+# 安装相关依赖
+COPY pyproject.toml .
 RUN bash -c "source /home/angr/.venv/bin/activate && \
-    pip install --no-cache-dir \
-        'mcp[cli]>=1.11.0' \
-        'ipython>=8.37.0' \
-        'langchain-core>=0.3.68' \
-        'pydantic>=2.11.7' \
-        'pyyaml>=6.0.2' \
-        'pytest>=8.0.0'"
-
-# 安装RE相关Python包（包括r2pipe和rzpipe）
-RUN bash -c "source /home/angr/.venv/bin/activate && \
-    pip install --no-cache-dir \
-        'pwntools>=4.14.1' \
-        'r2pipe' \
-        'rzpipe>=0.6.2' \
-        'capstone' \
-        requests \
-        flask \
-        jinja2"
-
-# 尝试安装其他可选包（如果失败不会中断构建）
-RUN bash -c "source /home/angr/.venv/bin/activate && \
-    (pip install --no-cache-dir z3-solver || echo 'z3-solver installation failed') && \
-    (pip install --no-cache-dir keystone-engine || echo 'keystone-engine installation failed') && \
-    (pip install --no-cache-dir unicorn || echo 'unicorn installation failed')"
+    pip install --no-cache-dir . && \
+    rm -f pyproject.toml"
 
 # 设置工作目录
 WORKDIR /workspace
@@ -202,4 +181,6 @@ echo "Virtual environment is automatically activated"' > /home/angr/test-env.sh
 RUN chmod +x /home/angr/test-env.sh
 
 # 默认启动bash并激活angr环境
-CMD ["/bin/bash", "-c", "source /home/angr/.venv/bin/activate && echo 'RE + MCP + Angr 环境已就绪！运行 /home/angr/test-env.sh 来测试环境' && /bin/bash"]
+CMD ["/bin/bash", "-c", "source /home/angr/.venv/bin/activate && \
+python3 ai_agent/mcp_server.py 2>/tmp/mcp_logs.err && \
+echo 'RE + MCP + Angr 环境已就绪！运行 /home/angr/test-env.sh 来测试环境' && /bin/bash"]
