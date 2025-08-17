@@ -7,7 +7,7 @@ import time
 def main(argv):
   # 定义目标二进制文件的路径。
   # 这个二进制文件是之前 `generate.py` 脚本生成的，它包含了一个需要被 Angr 解决的挑战。
-  path_to_binary = '01_angr_avoid/01_angr_avoid'
+  path_to_binary = 'dist/01_angr_avoid'
 
   # 创建一个 Angr Project 对象。
   # Project 对象是 Angr 分析的基础，它加载并解析二进制文件，使其可以进行符号执行。
@@ -66,7 +66,7 @@ def main(argv):
 
   # `will_not_succeed_address` 是一个在二进制文件中，当程序执行到这里时，表示进入了“坏”路径（即错误的输入）。
   # 这个地址通常对应于 `avoid_me()` 函数的入口点或其内部的某个关键点。
-  will_not_succeed_address = [0x08048810] # 0x08048810: start addr of "avoid_me"
+  will_not_succeed_address = [0x08048810, 0x080485a8] # 0x08048810: start addr of "avoid_me" (0x080485a8 is the one for dist/01_angr_avoid)
 
   # 调用 `explore` 方法开始符号执行。
   # `find`: 指定 Angr 应该尝试到达的目标地址。一旦找到一个到达此地址的状态，它就会被放入 `simulation.found` 列表中。
