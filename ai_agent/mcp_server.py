@@ -404,7 +404,7 @@ async def execute_python_code(code: str, timeout: int = 60) -> Dict[str, Any]:
 
     Args:
         code: A string containing Python code to execute.
-        timeout: Maximum execution time in seconds before timing out.
+        timeout: Maximum execution time in seconds before timing out. Note, due to the nature of `symbolic execution`, you should set a much longer timeout if you're using `angr` and expect complex code paths to be explored.
 
     Returns:
         The output of the executed code as a string.

@@ -88,16 +88,15 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dic
             if function_name:
                 # Get call graph for a specific function
                 # agCj: call graph, JSON output
-                graph_json = rz.cmd(f"agc json @ {function_name}")
+                graph_data = rz.cmdj(f"agc json @ {function_name}")
             else:
                 # Get global call graph
                 # agCj: call graph, JSON output
-                graph_json = rz.cmd("agC json")
+                graph_data = rz.cmdj("agC json")
 
-            if not graph_json:
+            if not graph_data:
                 return {"nodes": [], "edges": []}
 
-            graph_data = json.loads(graph_json)
             nodes = []
             edges = []
 
@@ -108,18 +107,24 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dic
                 node_entry = {
                     "id": n.get("id"),
                     "name": n.get("title"),
-                    "addr": hex(n.get("offset")) if n.get("offset") else "unknown",
+                    "addr": hex(n.get("offset", n.get("addr", 0))),
                 }
+                if not function_name:
+                    if node_entry["name"].startswith("sym.imp.") or node_entry["name"].startswith("sym.__"): # Ignore imported or system symbols if considering the global graph
+                        continue
                 nodes.append(node_entry)
-                id2off[node_entry["id"]] = node_entry["addr"]
+                id2off[node_entry["id"]] = node_entry.get("addr", node_entry.get("offset", 0))
 
             edges = []
-            from_node = graph_data.get("nodes", [])[0]
-            out_node_ids = from_node.get("out_nodes", [])
-            for dst_id in out_node_ids:
-                src_id = from_node.get("id")
-                if src_id in id2off and dst_id in id2off:
-                    edges.append({"from": src_id, "to": dst_id})
+            valid_node_ids = [n.get('id') for n in nodes]
+            for from_node in graph_data.get("nodes", []):
+                out_node_ids = from_node.get("out_nodes", [])
+                for dst_id in out_node_ids:
+                    if dst_id not in valid_node_ids:
+                        continue # We don't count the edges go to "imported" libraries
+                    src_id = from_node.get("id")
+                    if src_id in id2off and dst_id in id2off:
+                        edges.append({"from": src_id, "to": dst_id})
 
             return {"nodes": nodes, "edges": edges}
         except Exception as e:
@@ -155,7 +160,7 @@ def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[str,
             formatted_blocks = []
             for block in blocks_data:
                 b = {
-                    "addr": hex(block.get("addr")) if block.get("addr") else "unknown",
+                    "addr": hex(val) if (val := block.get("offset", block.get("addr"))) is not None else "unknown",
                     "size": block.get("size"),
                     "num_of_input_blocks": block.get("inputs", 0),
                     "num_of_output_blocks": block.get("outputs", 0),

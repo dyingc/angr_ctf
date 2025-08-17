@@ -88,7 +88,7 @@ templates:
             sym_packets = angr.SimPackets(name='stdio', content=[sym_input])
             s = p.factory.entry_state(
                 addr=start,
-                stdin=sym_packets,
+                stdin=sym_packets,  # Must set symbolic packets here when creating the state; don't assign them to stdin afterward.
                 add_options=add_options
             )
 

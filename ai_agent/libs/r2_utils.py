@@ -82,15 +82,14 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dic
         try:
             if function_name:
                 # Get call graph for a specific function, JSON output
-                graph_json = r2.cmdj(f"agcj @ {function_name}")
+                graph_data = r2.cmdj(f"agcj @ {function_name}")
             else:
                 # Get global call graph, JSON output
-                graph_json = r2.cmdj("agCj")
+                graph_data = r2.cmdj("agCj")
 
-            if not graph_json:
+            if not graph_data:
                 return {"nodes": [], "edges": []}
 
-            graph_data = json.loads(graph_json)
             nodes = []
             edges = []
 
@@ -103,7 +102,7 @@ def get_call_graph(binary_path: str, function_name: Optional[str] = None) -> Dic
             else:
                 # Process global call graph (agfj)
                 for node in graph_data:
-                    nodes.append({"name": node["name"], "addr": node["addr"]})
+                    nodes.append({"name": node["name"], "addr": node.get("addr", node.get("offset"))})
                     # agfj doesn't directly give edges in a simple list, need to infer from imports/exports
                     # This part might need refinement based on exact agfj output structure for edges
                     # For simplicity, we'll just list nodes for now, or use a different r2 command if needed for edges
@@ -139,7 +138,7 @@ def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[str,
             edges_data = r2.cmdj(f"agj @ {function_name}")
 
             # Map block addresses to their data for easier lookup
-            block_map = {b["addr"]: b for b in blocks_data}
+            block_map = {b.get("addr", b.get("offset")): b for b in blocks_data}
 
             # Add successors to each block
             for edge in edges_data:
@@ -382,12 +381,12 @@ def get_reachable_addresses(
             funcs = funcs_or_obj if isinstance(funcs_or_obj, list) else [funcs_or_obj]
             f0 = funcs[0] if funcs else {}
             blocks = f0.get("blocks", []) or []
-            f_entry = f0.get("addr")
+            f_entry = f0.get("addr", f0.get("offset"))
 
             # 2) 建块表（addr -> block）
             node_map: Dict[int, Dict[str, Any]] = {}
             for bb in blocks:
-                a = bb.get("addr")
+                a = bb.get("addr", bb.get("offset"))
                 if isinstance(a, int):
                     node_map[a] = bb
 
@@ -398,7 +397,7 @@ def get_reachable_addresses(
             def _find_block_head_containing(addr: int) -> Optional[int]:
                 b = r2.cmdj(f"abj @ {addr}")
                 if b and isinstance(b, list):
-                    return b[0].get("addr")
+                    return b[0].get("addr", b[0].get("offset"))
                 return None
 
             if entry_mode == "function" and isinstance(f_entry, int) and f_entry in node_map:
@@ -575,9 +574,9 @@ def get_reachable_addresses(
 
             functions = r2.cmdj("aflj") or []
             # 预处理：addr -> function dict（放在循环外构建一次）
-            func_by_addr = {f["addr"]: f for f in (functions or []) if isinstance(f.get("addr"), int)}
+            func_by_addr = {f.get("addr", f.get("offset")): f for f in (functions or []) if isinstance(f.get("addr", f.get("offset")), int)}
             # 预先算好函数/块的区间，便于“包含判断”
-            func_ranges = [(bb["addr"], bb["addr"] + (bb.get("size") or 0)) for bb in blocks if isinstance(bb.get("addr"), int)]
+            func_ranges = [(bb.get("addr", bb.get("offset")), bb.get("addr", bb.get("offset")) + (bb.get("size") or 0)) for bb in blocks if isinstance(bb.get("addr", bb.get("offset")), int)]
             def _in_func(frm: int) -> bool:
                 # 快速路径：fcn_addr 直接等于当前函数入口
                 # 注意：axtj 的 ref 可能没这个字段；有则 O(1)，没有再做区间判断
@@ -600,12 +599,12 @@ def get_reachable_addresses(
                     for c in c1:
                         if isinstance(c, int):
                             cases.append(c)
-                        elif isinstance(c, dict) and "addr" in c and isinstance(c["addr"], int):
-                            cases.append(c["addr"])
+                        elif isinstance(c, dict) and (("addr" in c and isinstance(c["addr"], int)) or ("offset" in c and isinstance(c["offset"], int))):
+                            cases.append(c.get("addr", c.get("offset")))
                     if isinstance(sw.get("defaddr"), int):
                         default = sw["defaddr"]
                     switches.append({
-                        "addr": bb.get("addr"),
+                        "addr": bb.get("addr", bb.get("offset")),
                         "cases": cases,
                         "default": default
                     })
@@ -613,7 +612,7 @@ def get_reachable_addresses(
                 for op in ops:
                     typ = (op.get("type") or "").lower()
                     dis = (op.get("disasm") or "").lower()
-                    a = op.get("addr")
+                    a = op.get("addr", op.get("offset"))
 
                     # 调用点
                     if typ in ("call", "ucall", "icall"):
@@ -929,7 +928,7 @@ def get_binary_info(binary_path: str) -> Dict[str, Any]:
                 for f in aflj or []:
                     if f.get("name", "").startswith("sym.imp."):
                         name = f["name"].replace("sym.imp.", "")
-                        result["plt_entries"][name] = f["addr"]
+                        result["plt_entries"][name] = f.get("addr", f.get("offset"))
             except Exception:
                 pass
 
@@ -949,7 +948,7 @@ def get_binary_info(binary_path: str) -> Dict[str, Any]:
                     n.endswith("__DATA_CONST.__got") or
                     n.endswith("__DATA.__got")
                 ):
-                    lo = s.get("addr"); sz = s.get("size") or 0
+                    lo = s.get("addr", s.get("offset")); sz = s.get("size") or 0
                     if lo and sz:
                         got_ranges.append((lo, lo + sz))
 
@@ -1104,7 +1103,7 @@ if __name__ == "__main__":
         rodata_size = None
         for s in info.get("sections", []):
             if ".rodata" in s.get("name", "") or "cstring" in s.get("name", ""):
-                rodata_addr = s["addr"]
+                rodata_addr = s.get("addr", s.get("offset"))
                 rodata_size = s["size"]
                 break
         if rodata_addr is None:

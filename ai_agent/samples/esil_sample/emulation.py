@@ -720,7 +720,7 @@ class ESILEmulator:
             return None
 
         f = info[0]
-        base = f["addr"]
+        base = f.get("addr", f.get("offset"))
         size = f["size"]
         upper = base + size
         last_block = self.r2.cmdj(f"afbj @ {base}")[-1]
@@ -761,7 +761,7 @@ class ESILEmulator:
             return None
 
         bb_info = bb[0]
-        base = bb_info["addr"]
+        base = bb_info.get("addr", bb_info.get("offset"))
         size = bb_info["size"]
         upper = base + size
 
