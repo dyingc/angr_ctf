@@ -82,7 +82,7 @@ def generate(argv):
   # userdef: 替换模板中的 {{ userdef }}。
   # len_userdef: 替换模板中的 {{ len_userdef }}，即 userdef 的长度。
   # description: 替换模板中的 {{ description }}（此处为空）。
-  # check_string: 替换模板中的 {{ check_string }}，即生成的条件代��，这是本挑战的核心逻辑。
+  # check_string: 替换模板中的 {{ check_string }}，即生成的条件代码，这是本挑战的核心逻辑。
   c_code = t.render(userdef=userdef, len_userdef=len(userdef), description = '', check_string=check_string)
 
   # 创建一个临时的 C 源文件。
@@ -94,11 +94,13 @@ def generate(argv):
     temp.write(c_code)
     # 将文件指针移到文件开头（此处未直接使用，但通常用于后续读取）。
     temp.seek(0)
-    
+
     # 根据架构选择合适的编译参数
     arch = platform.machine()
     if arch.startswith("x86"):
       # 适用于 x86_64 架构的编译命令
+      compile_cmd = 'cc -m32 -O2 -g -fno-pie -no-pie -fstack-protector-strong -Wl,-z,relro -o ' + output_file + ' ' + temp.name
+      compile_cmd = 'gcc -fno-pie -no-pie -m32 -o ' + output_file + ' ' + temp.name
       compile_cmd = 'gcc -fno-pie -no-pie -fcf-protection=none -fno-stack-protector -m32 -O0 -g -o ' + output_file + ' ' + temp.name
     elif arch == 'arm64':
       # 适用于 arm64 架构的编译命令 (Apple Silicon)
