@@ -1160,22 +1160,16 @@ def emulate_function(binary_path: str, function_name: str, max_steps: int = 100,
         future = executor.submit(_emulate_function_target, r2, function_name, max_steps, result_queue)
 
         try:
-<<<<<<< HEAD:ai_agent/r2_utils.py
             # Block until the result is available or timeout occurs.
-            return result_queue.get(timeout=timeout)
-        except queue.Empty:
-            # This is the primary expected exception: the emulation took too long.
-            return {"error": f"Emulation timed out after {timeout} seconds."}
-=======
             result = result_queue.get(timeout=timeout)
             if "error" in result:
                 return {"success": False, "error": result["error"]}
             return result
         except queue.Empty:
+            # This is the primary expected exception: the emulation took too long.
             return {"success": False, "error": f"Emulation timed out after {timeout} seconds."}
         except Exception as e:
             return {"success": False, "error": f"An unexpected error occurred: {str(e)}"}
->>>>>>> 34e06c358b4c0752dcc59c44a86c6f018d550603:ai_agent/libs/r2_utils.py
         finally:
             # Ensure the thread and r2pipe are cleaned up regardless of outcome.
             future.cancel()

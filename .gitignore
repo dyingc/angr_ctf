@@ -400,7 +400,6 @@ logs/
 *.out
 
 # Core dumps
-core
 core.*
 *.core
 
