@@ -8,7 +8,7 @@ def generate_true_statement(variable, value):
 
 def recursive_if_else(variable, value, depth):
   if depth == 0:
-    return 'if (strcmp(buffer, password)) { printf("Try again.\n"); } else { printf("Good Job.\n"); }'
+    return 'if (strcmp(buffer, password)) { printf(\"Try again.\\n\"); } else { printf(\"Good Job.\\n\"); }'
   else:
     if_true = random.choice([True, False])
     if (if_true):

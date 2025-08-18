@@ -1,3 +1,4 @@
+import sys
 from .base import BinaryAnalysisBackend
 from typing import Dict, Any, List, Optional
 # 直接复用现有实现
@@ -28,21 +29,45 @@ class Radare2Backend(BinaryAnalysisBackend):
         timeout = kwargs.get('timeout', 60)
         return impl.emulate_function(binary_path, function_name, max_steps, timeout)
 
+    def get_binary_info(self, binary_path: str) -> Dict[str, Any]:
+        """
+        提取二进制基础信息，见 ai_agent.libs.r2_utils.get_binary_info
+        """
+        return impl.get_binary_info(binary_path)
+
+    def get_reachable_addresses(self, binary_path: str, start_addr: int) -> Dict[str, Any]:
+        """
+        获取指定起点所有 CFG 可达、不可达/分支出口/循环结构块，见 ai_agent.libs.r2_utils.get_reachable_addresses
+        """
+        return impl.get_reachable_addresses(binary_path, start_addr)
+
+    def extract_static_memory(self, binary_path: str, addr: int, size: int) -> Dict[str, Any]:
+        """
+        读取指定虚拟地址内容/节区权限，见 ai_agent.libs.r2_utils.extract_static_memory
+        """
+        return impl.extract_static_memory(binary_path, addr, size)
+
+    def generate_angr_template(self, path_to_binary: str, analysis_goal: str = "find_path") -> Dict[str, Any]:
+        """
+        自动生成 angr 分析模板，从 config.yaml 注入，见 ai_agent.libs.r2_utils.generate_angr_template
+        """
+        return impl.generate_angr_template(path_to_binary, analysis_goal)
+
     def get_function_list(self, binary_path: str, exclude_builtins: bool = True) -> List[Dict[str, Any]]:
         # 复用示例中的逻辑
         r2 = impl._open_r2pipe(binary_path)
         try:
-            functions = r2.cmd("aflj")
-            if not functions or not isinstance(functions, str):
-                return []
-            func_list = impl.json.loads(functions)
+            func_list = r2.cmdj("aflj")
             if exclude_builtins:
                 # 示例中仅过滤 sym. 开头的
                 func_list = [f for f in func_list if not f["name"].startswith("sym.imp.")]
             shortented_func_list = []
             for func in func_list:
+                if func.get('addr', func.get('offset', 0)) == 0:
+                    print(f"Skipping function with missing address: {func}", file=sys.stderr)
+                    continue
                 shortented_func = {
-                    "offset": func["addr"],
+                    "offset": func.get('addr', func.get('offset')),
                     "name": func["name"],
                     "size": func["realsz"],
                     "file": func.get("file", ""),
