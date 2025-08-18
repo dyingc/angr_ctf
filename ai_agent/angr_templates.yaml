@@ -42,6 +42,65 @@ templates:
     # find_addr = lambda s: b"SUCCESS" in s.posix.dumps(1)  # stdout contains SUCCESS
     # avoid_addrs = lambda s: b"FAIL" in s.posix.dumps(1)   # stdout contains FAIL
 
+    # Option 3: Predicate functions (state inspection)
+    # Best for: Complex conditions, register/memory value checks, function call detection
+    use_predicate = False
+
+    def success_predicate(state):
+        """
+        Custom success condition - return True when target is reached
+
+        Common patterns:
+        - Register values: state.regs.eax == 0 (success return)
+        - Memory contents: state.memory.load(addr, size) == expected_value
+        - Function calls: state.addr in [func1_addr, func2_addr]
+        - Stack contents: check return addresses or local variables
+        - Symbolic constraints: state.solver.satisfiable(extra_constraints)
+        """
+        # Example: Success when EAX register equals 0
+        # return state.solver.is_true(state.regs.eax == 0)
+
+        # Example: Success when specific memory location contains expected value
+        # expected = b"PASS"
+        # try:
+        #     mem_val = state.memory.load(0x404000, len(expected))
+        #     return state.solver.satisfiable([mem_val == expected])
+        # except:
+        #     return False
+
+        # Example: Success when reaching any address in a range
+        # return 0x401200 <= state.addr <= 0x401300
+
+        # Example: Cached expensive computation
+        # cache_key = 'complex_check'
+        # if cache_key not in state.globals:
+        #     result = all(state.solver.satisfiable([
+        #         state.memory.load(0x400000 + i*4, 4) != 0
+        #     ]) for i in range(10))
+        #     state.globals[cache_key] = result
+        # return state.globals[cache_key] and state.addr == 0x401234
+
+        return False  # Placeholder
+
+    def avoid_predicate(state):
+        """
+        Custom avoid condition - return True to avoid this state
+
+        Common patterns:
+        - Infinite loops: detect cycles or excessive instruction counts
+        - Anti-debug: ptrace calls, debugger detection
+        - Resource exhaustion: malloc failures, stack overflow
+        - Invalid states: null pointer dereference, division by zero
+        """
+        # Example: Avoid states with specific register values
+        # return state.solver.is_true(state.regs.eax == 1)  # Error return
+
+        # Example: Avoid specific function calls
+        # dangerous_funcs = [0x401500, 0x401600]  # exit(), abort() addresses
+        # return state.addr in dangerous_funcs
+
+        return False  # Placeholder
+
     # ============================================================================
     # SYMBOLIC INPUT CONFIGURATION
     # ============================================================================
@@ -72,10 +131,9 @@ templates:
         start = p.entry  # Program entry point
         # start = 0x401000  # Or specific address to start from
 
-        # common add toptions
         add_options = {
-                    angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
-                    angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS
+            angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
+            angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
         }
 
         # Create initial state based on input method
@@ -92,7 +150,7 @@ templates:
                 add_options=add_options
             )
 
-            # Add constraints for printable ASCII (need to adjust based on real requirements)
+            # Add constraints for printable ASCII (adjust as needed)
             for i in range(input_length):
                 byte = sym_input.get_byte(i)
                 s.solver.add(byte >= 0x20)  # Space
@@ -105,20 +163,16 @@ templates:
                 # ))
 
         elif use_direct_stdin:
-            # Method 1: Simple stdin without pre-constraints
-            s = p.factory.entry_state(addr=start, add_options=add_options)
-            # Input will be symbolic when program reads stdin
+            s = p.factory.entry_state(addr=start, add_options=add_options)  # Symbolic on read
 
         elif use_argv:
-            # Method 3: Command-line arguments
-            argv_sym = [binary_path]  # argv[0] is program name
-            for i in range(1, 3):  # Add symbolic argv[1], argv[2], etc.
+            argv_sym = [binary_path]
+            for i in range(1, 3):  # argv[1], argv[2], ...
                 arg = claripy.BVS(f"argv_{i}", 8 * 16)  # 16 bytes per arg
                 argv_sym.append(arg)
             s = p.factory.entry_state(addr=start, args=argv_sym, add_options=add_options)
 
         else:
-            # Basic state without special input handling
             s = p.factory.entry_state(addr=start, add_options=add_options)
 
         # Create simulation manager
@@ -128,91 +182,59 @@ templates:
         # PATH EXPLORATION
         # ============================================================================
 
-        print(f"Starting symbolic execution...")
-        print(f"Target: {hex(find_addr) if isinstance(find_addr, int) else 'lambda function'}")
-        print(f"Avoiding: {[hex(a) for a in avoid_addrs] if isinstance(avoid_addrs, list) else 'lambda function'}")
+        if use_predicate:
+            find_condition = success_predicate
+            avoid_condition = avoid_predicate
+        else:
+            find_condition = find_addr
+            avoid_condition = avoid_addrs
 
-        # Explore with optional parameters
-        sm.explore(
-            find=find_addr,
-            avoid=avoid_addrs,
-            # Optional parameters:
-            # n=100,              # Max number of states to find
-            # num_find=1,         # Stop after finding this many
-            # avoid_priority=True # Prioritize avoiding over finding
-        )
+        sm.explore(find=find_condition, avoid=avoid_condition)
 
         # ============================================================================
         # RESULT EXTRACTION
         # ============================================================================
 
         if sm.found:
-            print(f"\n✅ SUCCESS! Found {len(sm.found)} solution(s)")
+            print(f"Found {len(sm.found)} solution(s).")
+            for i, st in enumerate(sm.found, 1):
+                if not st.solver.satisfiable():
+                    print(f"Solution {i}: unsatisfiable")
+                    continue
 
-            for i, st in enumerate(sm.found):
-                print(f"\n--- Solution {i+1} ---")
-
-                # Check if constraints are satisfiable
-                if st.solver.satisfiable():
                     # Extract stdin input. This was actually read from stdin during execution which may include
                     # partial reads or multiple reads. It reflects the actual I/O operations that occurred
-                    try:
-                        stdin_data = st.posix.dumps(sys.stdin.fileno())
-                        print(f"stdin: {stdin_data}")
-                        # For printable strings:
-                        # print(f"stdin (ascii): {stdin_data.decode('ascii', errors='ignore')}")
-                    except Exception as e:
-                        print(f"Could not extract stdin: {e}")
+                try:
+                    stdin_data = st.posix.dumps(sys.stdin.fileno())
+                    if stdin_data:
+                        print(f"Solution {i} stdin (bytes): {stdin_data}")
+                        # For ASCII view:
+                        # print(f"Solution {i} stdin (ascii): {stdin_data.decode('ascii', errors='ignore')}")
+                except Exception as e:
+                    print(f"Solution {i} stdin extraction error: {e}")
 
-                    # Extract stdout output
+                # Extract stdout (optional)
+                try:
+                    stdout_data = st.posix.dumps(sys.stdout.fileno())
+                    if stdout_data:
+                        print(f"Solution {i} stdout: {stdout_data}")
+                except:
+                    pass
+
+                # If using symbolic packets, show the full buffer value too
+                # It may include bytes that were never actually read by the program
+                if use_symbolic_packets:
                     try:
-                        stdout_data = st.posix.dumps(sys.stdout.fileno())
-                        if stdout_data:
-                            print(f"stdout: {stdout_data}")
+                        concrete_input = st.solver.eval(sym_input, cast_to=bytes)
+                        print(f"Solution {i} buffer (bytes): {concrete_input}")
+                        # print(f"Solution {i} buffer (ascii): {concrete_input.decode('ascii', errors='ignore')}")
                     except:
                         pass
 
-                    # If using symbolic variables, extract their values
-                    # This is the full input buffer you created and may include bytes that were never actually read by the program
-                    if use_symbolic_packets:
-                        try:
-                            concrete_input = st.solver.eval(sym_input, cast_to=bytes)
-                            print(f"Symbolic input value: {concrete_input}")
-                            print(f"As string: {concrete_input.decode('ascii', errors='ignore')}")
-                        except:
-                            pass
-
-                    # Extract register values if needed
-                    # print(f"eax: {st.regs.eax}")
-                    # print(f"rdi: {st.regs.rdi}")  # x64
-
-                    # Extract memory values if needed
-                    # mem_val = st.memory.load(0x404000, 4)  # Read 4 bytes at address
-                    # print(f"Memory at 0x404000: {st.solver.eval(mem_val, cast_to=bytes)}")
-
-                    print(f"Final address reached: {hex(st.addr)}")
-                else:
-                    print(f"Solution {i+1} has unsatisfiable constraints")
-
+                print(f"Solution {i} final address: 0x{st.addr:x}")
         else:
-            print("\n❌ No solution found")
-            print(f"Deadended states: {len(sm.deadended)}")
-            print(f"Active states: {len(sm.active)}")
-            print(f"Avoided states: {len(sm.avoid)}")
-
-            # Debug information
-            if sm.deadended:
-                print("\nDeadended states (first 3):")
-                for st in sm.deadended[:3]:
-                    print(f"  - Stopped at: {hex(st.addr)}")
-                    # Check why it deadended
-                    if st.addr == 0:
-                        print("    (Likely segfault or exit)")
-
-            if sm.active:
-                print("\nActive states still exploring (first 3):")
-                for st in sm.active[:3]:
-                    print(f"  - Currently at: {hex(st.addr)}")
+            print("No solution found.")
+            print(f"deadended={len(sm.deadended)} active={len(sm.active)} avoid={len(sm.avoid)}")
 
     # ============================================================================
     # COMMON PITFALLS AND SOLUTIONS
@@ -260,6 +282,12 @@ templates:
     - 32-bit vs 64-bit have different register usage
     - ARM/MIPS have different conventions than x86
     - Solution: Let angr auto-detect, or specify: angr.Project(binary, arch='i386')
+
+    6. Predicate Function Performance:
+    - Predicates are called frequently - keep them fast
+    - Cache expensive computations: state.globals['cache_key'] = result
+    - Use state.solver.is_true() for simple symbolic checks
+    - Avoid complex memory operations in predicates when possible
     """
 
     if __name__ == "__main__":
