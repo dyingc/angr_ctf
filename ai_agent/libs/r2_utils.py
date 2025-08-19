@@ -51,7 +51,7 @@ def _resolve_address(binary_path: str, expr: int | str) -> Optional[int]:
         return expr
 
     with r2_lock:
-        r2 = _open_r2pipe(binary_path, analyze=False)
+        r2 = _open_r2pipe(binary_path, analyze=True)
         try:
             addr = r2.cmd(f"?v {expr}")
             if addr:

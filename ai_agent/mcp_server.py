@@ -398,21 +398,72 @@ async def emulate_function(binary_path: str, function_name: str, max_steps: int 
     return emulation.emulate_function(binary_path, function_name, max_steps, timeout, stack_bytes=stack_bytes, stack_size=stack_size, stack_base=stack_base, data_size=data_size, data_base=data_base)
 
 @mcp.tool()
-async def execute_python_code(code: str, timeout: int = 60) -> Dict[str, Any]:
+async def execute_python_code(code: str, timeout: int = 15) -> Dict[str, Any]:
     """
-    Execute Python code passed as a string and return the output.
+    Run short, self-contained Python code and return its printed output.
+
+    This tool is for quick scripts and sanity checks—not heavy jobs.
+
+    Behavior:
+    - Executes the provided code in a fresh, sandboxed interpreter.
+    - Captures and returns everything written to stdout/stderr as text.
+    - No interactive input (e.g., `input()` will block).
+    - No internet access or external processes.
+    - File I/O may be restricted to a temporary sandbox.
+    - Kills execution on timeout.
 
     Args:
-        code: A string containing Python code to execute.
-        timeout: Maximum execution time in seconds before timing out. Note, due to the nature of `symbolic execution`, you should set a much longer timeout if you're using `angr` and expect complex code paths to be explored.
+        code (str): Python source code to execute.
+        timeout (int | float): Max seconds to run before aborting.
 
     Returns:
-        The output of the executed code as a string.
+        dict: Combined stdout/stderr produced by the code.
+
+    Notes for LLMs:
+    - Keep snippets short and deterministic.
+    - Avoid long loops, sleeps, threads, or daemons.
+    - Prefer printing results instead of relying on return values from the top level.
     """
     # This function is synchronous in the original implementation.
     # We run it in a separate thread to avoid blocking the asyncio event loop.
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, execute_python_code_impl, code, timeout)
+
+@mcp.tool()
+async def execute_angr_code(angr_code: str, timeout: int = 3600) -> Dict[str, Any]:
+    """
+    Run Python code that uses angr for symbolic execution and return printed output.
+
+    Intended for targeted symbolic tasks (path exploration, constraint solving) in
+    binary analysis and reverse engineering.
+
+    Environment & behavior:
+    - `angr` (and `claripy`) are available/importable.
+    - Executes in a fresh, sandboxed interpreter.
+    - Captures and returns stdout/stderr as text.
+    - No interactive input, no internet, no external processes.
+    - File access limited to a temporary sandbox (place test binaries there).
+    - Execution is terminated on timeout.
+
+    Args:
+        angr_code (str): Python source code that may import/use `angr`/`claripy`.
+        timeout (int): Max seconds to run before aborting. Symbolic
+            execution can be expensive—choose a larger timeout only if needed.
+
+    Returns:
+        dict: Combined stdout/stderr produced by the code.
+
+    Example return:
+        {"result":"Starting exploration...\nFound 1 solution(s)!\nSolution 1: YQSTSQTH\n  Stdin data: b'YQSTSQTH'","need_refine":false,"prompts":[]}
+
+    Notes for LLMs (best practices):
+    - Constrain the search space: set `find/avoid`, limit depth, and use timeouts.
+    - Use smaller binaries or slices; avoid loading huge programs.
+    - Prefer `proj.factory.entry_state()`/`blank_state()` with explicit options.
+    - Print concise results (e.g., found addresses/solutions) and exit cleanly.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, execute_python_code_impl, angr_code, timeout)
 
 @mcp.tool()
 async def execute_os_command(command: str, timeout: int = 60) -> Dict[str, Any]:

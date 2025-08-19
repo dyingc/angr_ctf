@@ -67,11 +67,10 @@ class RizinBackend(BinaryAnalysisBackend):
     def get_pseudo_code(self, binary_path: str, function_name: str) -> str:
         rz = impl._open_rzpipe(binary_path)
         try:
-            pseudo_code = rz.cmd(f"pdgj @ {function_name}")
+            pseudo_code = rz.cmd(f"pdg @ {function_name} | grep -E -v 'WARNING:.*Removing.*unreachable.*block'")
             if not pseudo_code or not isinstance(pseudo_code, str):
                 return ""
-            pseudo_code = impl.json.loads(pseudo_code)
-            return pseudo_code.get('code', "")
+            return pseudo_code
         finally:
             rz.quit()
 

@@ -1,2 +1,3 @@
-cd ~/VSCode/angr/angr_ctf && npx @modelcontextprotocol/inspector docker run --rm -i --platform=linux/amd64 -v "$(pwd)":/workspace --workdir /workspace angr-ctf:latest &
+cd ~/VSCode/angr/angr_ctf
+npx @modelcontextprotocol/inspector docker attach $(docker ps -q --filter ancestor=angr-ctf:latest) &
 cd -
