@@ -181,6 +181,8 @@ def get_cfg_basic_blocks(binary_path: str, function_name: str) -> List[Dict[str,
             # Map block addresses to their data for easier lookup
             block_map = {b.get("addr", b.get("offset")): b for b in blocks_data}
 
+            formatted_blocks = []
+
             for block in blocks_data:
                 # Determine block type based on jump/fail fields
                 block_type = _determine_block_type(block)
