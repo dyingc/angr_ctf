@@ -1,7 +1,7 @@
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
-import json
+import io
 import sys, os
 import subprocess
 import yaml
@@ -109,10 +109,45 @@ class PythonInterpreterToolInput(BaseModel):
     code: str = Field(..., description="The Python code to execute.")
     timeout: int = Field(10, description="Maximum execution time in seconds before timeout.")
 
+class StdoutProxy(io.TextIOBase):
+    """Proxy that captures writes to an internal buffer but preserves fileno() etc."""
+    def __init__(self, real_stdout):
+        self._real = real_stdout
+        self._buf = StringIO()
+
+    # --- capturing ---
+    def write(self, s):
+        return self._buf.write(s)
+
+    def flush(self):
+        self._buf.flush()
+
+    def getvalue(self):
+        return self._buf.getvalue()
+
+    # --- make it look like a real stream ---
+    def fileno(self):
+        # preserve the real fd (usually 1), so code using sys.stdout.fileno() keeps working
+        return self._real.fileno()
+
+    @property
+    def encoding(self):
+        # many libraries expect an encoding attribute
+        return getattr(self._real, "encoding", "utf-8")
+
+    def readable(self):  # satisfy IOBase expectations
+        return False
+
+    def writable(self):
+        return True
+
+    def isatty(self):
+        return getattr(self._real, "isatty", lambda: False)()
+
 @contextlib.contextmanager
 def capture_stdout():
     """Capture stdout and return it as a string."""
-    stdout = StringIO()
+    stdout = StdoutProxy(sys.__stdout__)  # use the real, unredirected stdout
     old_stdout = sys.stdout
     sys.stdout = stdout
     try:
