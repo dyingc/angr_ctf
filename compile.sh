@@ -23,7 +23,7 @@ USAGE
 IMAGE="angr-build:latest"
 DOCKERFILE="Angr_Build_Image_Dockerfile"
 RUNTIME=""
-SKIP_BUILD=0
+SKIP_BUILD=1
 DRYRUN=0
 
 while getopts ":i:f:r:nph" opt; do
