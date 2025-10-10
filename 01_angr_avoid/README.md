@@ -37,6 +37,84 @@
 *   **`angr.SimulationManager.explore()` 方法**：
     *   `simgr.explore(find=target_address, avoid=undesired_address)`: 这是解决此挑战的核心。angr 将尝试找到一条路径，该路径会到达 `target_address`，同时不会经过 `undesired_address`。
 
+## 为什么需要 `avoid` 参数？详解
+
+很多初学者会问：既然我们已经设置了正确的 `find` 目标地址，为什么还需要额外设置 `avoid` 参数来规避某些路径呢？
+
+### 1. **性能优化：避免路径爆炸**
+
+**不使用 `avoid` 参数的问题**：
+```python
+# 只有 find 参数 - 会工作但效率很低
+simulation.explore(find=print_good_address)
+```
+- angr 将会探索从入口点开始的**所有可能路径**
+- 包括那些最终会失败或进入死胡同的路径
+- 对于复杂二进制文件，这可能导致：
+  - **路径爆炸**：路径数量呈指数级增长
+  - **内存消耗**：需要跟踪成百上千个无效状态
+  - **求解时间延长**：在无用的路径上浪费计算资源
+
+**使用 `avoid` 参数的优势**：
+```python
+# 同时使用 find 和 avoid 参数 - 高效且精确
+simulation.explore(find=print_good_address, avoid=will_not_succeed_address)
+```
+- angr **立即丢弃**任何会到达 `avoid_me()` 函数的路径
+- 只专注于探索有希望成功的路径分支
+- 通常能在几秒内找到解决方案
+
+### 2. **引导式探索：提供方向性**
+
+`avoid` 参数就像是为 angr 设置的"护栏"：
+
+- **告诉 angr**："不要浪费时间探索这个区域"
+- **引导探索**：专注于可能到达目标的路径
+- **减少噪音**：避免分析无关的失败逻辑
+
+### 3. **在 `01_angr_avoid` 中的实际应用**
+
+在这个挑战中，二进制文件通常具有：
+- **多个分支**：在执行早期就有不同的选择
+- **一些路径**：通向 `avoid_me()` 函数（失败路径）
+- **其他路径**：通向 `maybe_good()` 函数（成功路径）
+
+**不使用 `avoid`**：
+1. angr 探索成功和失败的路径
+2. 浪费时间分析 `avoid_me()` 函数的逻辑
+3. 产生许多不必要的状态
+
+**使用 `avoid`**：
+1. angr 立即剪除失败路径
+2. 只探索有希望的分支
+3. 快速找到解决方案
+
+### 4. **实际示例对比**
+
+```python
+# 方法一：仅使用 find（慢）
+print_good_address = 0x0804925b
+simulation.explore(find=print_good_address)
+# 可能需要探索数百个状态，耗时几分钟
+
+# 方法二：使用 find + avoid（快）
+print_good_address = 0x0804925b
+will_not_succeed_address = 0x08049223  # avoid_me 函数地址
+simulation.explore(find=print_good_address, avoid=will_not_succeed_address)
+# 通常只需要探索几个状态，几秒内完成
+```
+
+### 5. **在更复杂挑战中的重要性**
+
+在后续的 angr CTF 挑战中，当二进制文件变得更加复杂时：
+- 可能有**数千个可能的路径**
+- 包含**循环**和**递归**结构
+- 有**多个失败条件**
+
+在这种情况下，合理使用 `avoid` 参数变得**至关重要**，它可以将求解时间从几小时缩短到几秒钟。
+
+**总结**：`avoid` 参数不仅是一个可选功能，而是高效符号执行的关键工具。它通过剪除无效路径，大大提高了 angr 的求解效率和实用性。
+
 ## 实践步骤
 
 1.  **分析二进制文件**：
@@ -50,7 +128,9 @@
         ```bash
         r2 -q -c 'pdf @sym.maybe_good' 01_angr_avoid/01_angr_avoid
         ```
+
         ![Instructions executed when SUC](imgs/SUC.png)
+
         在反汇编输出中，查找包含 "Good Job." 字符串引用的指令（例如 `push str.Good_Job.` 后跟 `call sym.imp.puts`）。如果找到，则确认 `maybe_good` 是正确的 `find` 地址。
 2.  **修改 `scaffold01.py`**：
     *   将 `path_to_binary` 设置为正确的二进制文件路径（例如 `'./solutions/01_angr_avoid/01_angr_avoid'`）。
