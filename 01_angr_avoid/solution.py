@@ -1,5 +1,5 @@
 import angr
-from angr import SimFileStream
+from angr import SimPackets
 import claripy
 import sys
 import time
@@ -14,19 +14,23 @@ def main(argv):
   project = angr.Project(path_to_binary, auto_load_libs=False)
 
   # Password 符号变量
-  password_length = 8
-  symbolic_password = claripy.BVS('password', 8 * password_length)
+  password_length = 32
+  symbolic_password = claripy.BVS('password', password_length * 8)  # 每个字符 8 位
 
-  # 创建初始状态 (initial state)。
-  # 这是符号执行的起点。
+  # 创建初始状态 (initial state) - 符号执行的起点
+  #
+  # stdin 配置:
+  # - SimPackets: angr 中 stdin 的默认类型,将输入建模为连续的数据包
+  # - content=[(symbolic_password, password_length)]: 单个 packet,包含符号变量和其字节长度
+  #   * 每个 packet 对应程序的一次读取操作(scanf/read)
+  #   * 格式必须是: [(bitvector, length), ...] 元组列表
+  # - 注意: 如果程序只读取一次,就只需要一个 packet;多次读取需要多个 packets
+  #
   # add_options 参数用于配置 Angr 如何处理未约束的内存和寄存器。
   # SYMBOL_FILL_UNCONSTRAINED_MEMORY: 当访问未初始化的内存时，Angr 会用符号值填充它，而不是引发错误。这对于探索未知输入非常有用。
   # SYMBOL_FILL_UNCONSTRAINED_REGISTERS: 类似地，对于未初始化的寄存器，Angr 会用符号值填充它们。
   initial_state = project.factory.entry_state(
-      stdin = SimFileStream(name='stdin',
-                            content=symbolic_password,
-                            size=password_length,
-                            has_end=True),
+      stdin = SimPackets(name='stdin', content=[(symbolic_password, password_length)]),
       add_options = { angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
                       angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS}
   )
@@ -65,11 +69,11 @@ def main(argv):
 
   # `print_good_address` 是一个在二进制文件中，当程序执行到这里时，表示找到了“好”路径（即正确的输入）。
   # 这个地址通常对应于 `maybe_good()` 函数的入口点或其内部的某个关键点。
-  print_good_address = 0x08049260 # [0x08049258]
+  print_good_address = 0x08048860 # [0x08049258]
 
   # `will_not_succeed_address` 是一个在二进制文件中，当程序执行到这里时，表示进入了“坏”路径（即错误的输入）。
   # 这个地址通常对应于 `avoid_me()` 函数的入口点或其内部的某个关键点。
-  will_not_succeed_address = [0x08049226] # , 0x0804926a]
+  will_not_succeed_address = [0x08048810] # , 0x0804926a]
 
   # 调用 `explore` 方法开始符号执行。
   # `find`: 指定 Angr 应该尝试到达的目标地址。一旦找到一个到达此地址的状态，它就会被放入 `simulation.found` 列表中。
