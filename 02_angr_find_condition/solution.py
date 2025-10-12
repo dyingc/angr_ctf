@@ -40,7 +40,7 @@ def main(argv):
   def should_abort(state):
     stdout_output = state.posix.dumps(sys.stdout.fileno())
     FAIL = b'Try again.'
-    return FAIL in stdout_output  # :boolean
+    return FAIL in stdout_output  # You're encouraged to output the stdout_output for debugging purposes.
 
   # Tell Angr to explore the binary and find any state that is_successful identfies
   # as a successful state by returning True.
