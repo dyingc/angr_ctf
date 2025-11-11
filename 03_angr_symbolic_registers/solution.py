@@ -22,6 +22,8 @@ def main(argv):
                     angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS}
   )
 
+  start_address += project.loader.min_addr # 调整地址偏移，用于针对 PIE 编译的二进制文件
+
   # Create a symbolic bitvector (the datatype Angr uses to inject symbolic
   # values into the binary.) The first parameter is just a name Angr uses
   # to reference it.
