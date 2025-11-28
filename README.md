@@ -308,56 +308,132 @@ echo "JXWVXRKX" | ./00_angr_find
 
 ## 挑战级别详解
 
-### 入门级别（00-02）
+本套 CTF 一共包含 00–17 共 18 个主线关卡，外加 1 个特殊关卡 `xx_angr_segfault`。建议按序通关，避免跨越过大难度梯度。
+
+- 快速索引
+  - 00_angr_find / 01_angr_avoid / 02_angr_find_condition
+  - 03_angr_symbolic_registers / 04_angr_symbolic_stack / 05_angr_symbolic_memory / 06_angr_symbolic_dynamic_memory
+  - 07_angr_symbolic_file / 08_angr_constraints
+  - 09_angr_hooks / 10_angr_simprocedures / 11_angr_sim_scanf / 12_angr_veritesting
+  - 13_angr_static_binary / 14_angr_shared_library
+  - 15_angr_arbitrary_read / 16_angr_arbitrary_write / 17_angr_arbitrary_jump
+  - xx_angr_segfault
+
+### 入门（00–02）
 
 #### 00_angr_find
-- **学习目标**：基础符号执行和路径查找
-- **关键技术**：`project.factory.entry_state()`, `simulation.explore(find=address)`
-- **核心概念**：理解 angr 项目结构和基本工作流程
+- 学习目标：基础符号执行与路径查找
+- 关键技术：`Project(...)`、`project.factory.entry_state()`、`simgr.explore(find=addr)`
+- 核心概念：状态、路径、约束的最简闭环；如何定位 “Good job” 的打印位置或目标地址
 
 #### 01_angr_avoid
-- **学习目标**：使用避免条件优化路径探索
-- **关键技术**：`simulation.explore(find=good_addr, avoid=bad_addr)`
-- **核心概念**：路径剪枝和状态空间管理
+- 学习目标：在探索时避开坏路径
+- 关键技术：`simgr.explore(find=good, avoid=bad)`、多 find/avoid 组合
+- 核心概念：路径剪枝与搜索空间控制，减少无效分支
 
 #### 02_angr_find_condition
-- **学习目标**：基于运行时条件的动态路径判断
-- **关键技术**：回调函数 `simulation.explore(find=find_condition)`
-- **核心概念**：动态条件判断而非静态地址
+- 学习目标：用动态条件代替固定地址
+- 关键技术：`find=lambda s: ...`、对输出/内存/寄存器做条件判断
+- 核心概念：更贴近真实场景的“目标态”判定思路
 
-### 中级级别（03-06）
+### 基础进阶（03–08）
 
 #### 03_angr_symbolic_registers
-- **学习目标**：符号寄存器操作
-- **关键技术**：`state.regs.eax = claripy.BVS('symbolic_reg', 32)`
-- **核心概念**：寄存器级符号化
+- 学习目标：寄存器符号化与求解
+- 关键技术：`claripy.BVS(...)` 赋值给 `state.regs.*`，约束添加与求解
+- 核心概念：从指令级视角理解符号执行的数据流
 
 #### 04_angr_symbolic_stack
-- **学习目标**：符号栈操作
-- **关键技术**：栈内存符号化和约束设置
-- **核心概念**：栈内存模型
+- 学习目标：栈变量/返回地址的建模与约束
+- 关键技术：通过 `state.mem`/`state.stack_push/stack_pop` 操作栈
+- 核心概念：调用约定、栈帧布局与符号化交互
 
 #### 05_angr_symbolic_memory
-- **学习目标**：符号内存操作
-- **关键技术**：`state.memory.store(address, symbolic_value)`
-- **核心概念**：内存符号化
+- 学习目标：通用内存读写符号化
+- 关键技术：`state.memory.store/load`、别名/指针寻址
+- 核心概念：内存模型与地址可达性；避免过度符号化
 
 #### 06_angr_symbolic_dynamic_memory
-- **学习目标**：动态内存（堆）符号化
-- **关键技术**：堆内存管理和符号化
-- **核心概念**：动态内存分析
-
-### 高级级别（07+）
+- 学习目标：堆与动态分配场景
+- 关键技术：模拟 `malloc/free` 行为、堆块边界与越界约束
+- 核心概念：动态内存管理与符号化对象生命周期
 
 #### 07_angr_symbolic_file
-- **学习目标**：文件系统符号化
-- **关键技术**：SimFile 和文件系统模拟
-- **核心概念**：I/O 符号化
+- 学习目标：文件 I/O 的符号化
+- 关键技术：`angr.storage.SimFile`、向 `state.posix` 挂载虚拟文件
+- 核心概念：将外部输入建模为文件系统事件与字节流
 
 #### 08_angr_constraints
-- **学习目标**：复杂约束处理
-- **关键技术**：约束求解器优化
-- **核心概念**：约束系统
+- 学习目标：约束管理与求解器交互
+- 关键技术：`state.solver.add/exactly_n_bits_set/...`、检查可满足性与最小解
+- 核心概念：约束冗余、冲突定位与性能权衡
+
+### 实战技巧（09–12）
+
+#### 09_angr_hooks
+- 学习目标：在指定地址/函数上打 Hook 改写语义
+- 关键技术：`@project.hook(addr, length=...)`、`project.hook_symbol('puts', ...)`
+- 核心概念：把难以模拟或无关逻辑“替换”为受控语义以加速探索
+
+#### 10_angr_simprocedures
+- 学习目标：用 SimProcedure 模拟库函数/系统调用
+- 关键技术：自定义 `SimProcedure`、重定向 PLT/GOT、`use_sim_procedures=True`
+- 核心概念：在静态或缺失依赖环境中恢复高层行为
+
+#### 11_angr_sim_scanf
+- 学习目标：处理 scanf 家族及格式化输入
+- 关键技术：格式串解析、按格式构建/约束输入、`state.posix.stdin`
+- 核心概念：I/O 与约束间的桥接，避免无界输入导致的状态爆炸
+
+#### 12_angr_veritesting
+- 学习目标：使用 Veritesting 缓解路径爆炸
+- 关键技术：`angr.exploration_techniques.Veritesting()`、区域性路径合并
+- 核心概念：在基本块区域内将多分支“总结”为单一大步
+
+### 系统与链接（13–14）
+
+#### 13_angr_static_binary
+- 学习目标：分析静态链接二进制
+- 关键技术：无外部依赖、更多 SimProcedures 介入、`auto_load_libs=False`
+- 核心概念：当库函数不可动态解析时的替代策略与入口点选择
+
+#### 14_angr_shared_library
+- 学习目标：分析共享库（.so/.dylib）
+- 关键技术：指定入口导出符号作为起点、PLT/GOT Hook、`main_opts` 配置
+- 核心概念：非可执行主程序的建模；对导出 API 的单元级探索
+
+### 内存与控制流（15–17）
+
+#### 15_angr_arbitrary_read
+- 学习目标：任意地址读原语的分析与利用建模
+- 关键技术：约束地址范围、`state.memory.load(ptr, size)` 的可满足性检查
+- 核心概念：读原语可导致信息泄露；通过约束使读到预期数据
+
+#### 16_angr_arbitrary_write
+- 学习目标：任意地址写原语的分析与利用建模
+- 关键技术：`state.memory.store(ptr, value)`、写前/后状态对比与不变式
+- 核心概念：控制关键指针/函数指针/返回地址以构造进一步劫持
+
+#### 17_angr_arbitrary_jump
+- 学习目标：控制流劫持（间接跳转/调用）
+- 关键技术：约束 `state.regs.ip/eip/rip` 指向可控/可执行地址，避免坏区域
+- 核心概念：从数据面（写原语）过渡到控制面（执行流）的一体化推演
+
+### 特殊关卡
+
+#### xx_angr_segfault
+- 学习目标：处理崩溃/段错误情形下的探索与调试
+- 关键技术：
+  - 使用 `simgr` 的 `errored`/`unconstrained` 等分支检查崩溃原因
+  - 通过 Hook/SimProcedure 仿真导致崩溃的指令/调用以继续探索
+  - 利用 `state.inspect`/`breakpoint` 捕获非法读写并定位根因
+- 核心概念：把“崩溃”作为线索而非终点，将错误路径转化为可控的分析上下文
+
+提示与建议
+- 按序闯关：每关引入新概念，后续题目往往复用前面技巧
+- 控制搜索空间：合理使用 `avoid`、Hook 和 Veritesting
+- 优先建模外部输入：stdin/argv/file/socket 都是常见数据面
+- 记录关键地址：目标打印点、错误分支、间接跳转点、函数指针位置等
 
 ## 调试和故障排除
 
