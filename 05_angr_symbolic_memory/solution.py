@@ -32,7 +32,7 @@ def main():
     )
 
     # Set the value, starting from the userinput address, to the symbolic variables, totally 4 * input_size bytes
-    init_state.memory.store(userinput_addr, symbolic_input, size=4 * input_size)
+    init_state.memory.store(userinput_addr, symbolic_input, size=4 * input_size, endness=project.arch.memory_endness)
 
     # Create a simulation manager to explore the binary
     simgr = project.factory.simulation_manager(init_state)
