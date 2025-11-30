@@ -183,7 +183,9 @@ simulation.explore(find=print_good_address, avoid=will_not_succeed_address)
         ```bash
         r2 -q -c 'pdf @sym.maybe_good' 01_angr_avoid/01_angr_avoid
         ```
+
         ![Instructions executed when SUC](imgs/SUC.png)
+
         在反汇编输出中，查找包含 "Good Job." 字符串引用的指令（例如 `push str.Good_Job.` 后跟 `call sym.imp.puts`）。如果找到，则确认 `maybe_good` 是正确的 `find` 地址。
 2.  **修改 `scaffold01.py`**：
     *   将 `path_to_binary` 设置为正确的二进制文件路径（例如 `'./solutions/01_angr_avoid/01_angr_avoid'`）。

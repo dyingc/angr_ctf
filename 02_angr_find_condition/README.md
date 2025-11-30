@@ -23,14 +23,14 @@
 
 1.  **输入**：程序通过 `scanf("%8s", buffer);` 从用户处获取一个最多 8 个字符的输入。
 2.  **密码转换**：
-    *   程序内部有一个硬编码的密码 `USERDEF`。
+    *   程序内部有一个硬编码的密码字符串 `USERDEF`。用户输入的密码字符串，在经过一系列复杂转换后，会与这个硬编码的 `USERDEF` 进行比较，以此判定用户输入的密码是否正确。
     *   `for` 循环遍历用户输入的每个字符，并将其传递给 `complex_function` 进行转换：
         ```c
         for (int i=0; i<LEN_USERDEF; ++i) {
           buffer[i] = complex_function(buffer[i], i+8);
         }
         ```
-    *   `complex_function` 是一个关键函数，它对每个字符进行基于其位置的数学转换。这意味着，即使您知道最终正确的密码，也无法直接输入它来通过检查。
+    *   `complex_function` 是一个关键函数，它对每个字符进行基于其位置的数学转换。这意味着，即使您知道那个硬编码的 `USERDEF`，也无法直接输入它来通过检查。
         ```c
         int complex_function(int value, int i) {
           #define LAMBDA 31

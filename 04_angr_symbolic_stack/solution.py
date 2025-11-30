@@ -44,6 +44,8 @@ def main(argv):
                     angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS}
   )
 
+  start_address += initial_state.project.loader.min_addr # 可用于处理 PIE 二进制文件
+
   # 我们正在跳入一个函数的中间！因此，我们需要考虑
   # 函数如何构建栈。函数的第二条指令是：
   #   mov ebp, esp

@@ -15,7 +15,7 @@ import sys
 
 def main(argv):
   path_to_binary = argv[1]
-  project = angr.Project(path_to_binary, auto_load_libs=False) # Using False: the average run time is ~5.5s while True: ~7.5s
+  project = angr.Project(path_to_binary)
   initial_state = project.factory.entry_state(
     add_options = { angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
                     angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS}
@@ -30,8 +30,7 @@ def main(argv):
 
     # Return whether 'Good Job.' has been printed yet.
     # (!)
-    SUC = b'Good Job.'
-    return SUC in stdout_output  # :boolean
+    return ???  # :boolean
 
   # Same as above, but this time check if the state should abort. If you return
   # False, Angr will continue to step the state. In this specific challenge, the
@@ -39,8 +38,7 @@ def main(argv):
   # "Try again."
   def should_abort(state):
     stdout_output = state.posix.dumps(sys.stdout.fileno())
-    FAIL = b'Try again.'
-    return FAIL in stdout_output  # You're encouraged to output the stdout_output for debugging purposes.
+    return ???  # :boolean
 
   # Tell Angr to explore the binary and find any state that is_successful identfies
   # as a successful state by returning True.
