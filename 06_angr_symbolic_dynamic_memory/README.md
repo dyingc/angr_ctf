@@ -76,6 +76,10 @@ state.memory.store(ptr_slot, heap_buf0,
 
 调试技巧：若 `solver.constraints` 中完全看不到 `input0` 符号，首先检查此处字节序。
 
+> ⚠️ **字符串无需指定 `endness`**
+> `char` 数组是逐字节读写，若在 `state.memory.store()` 时强行加上小端翻转，
+> `"ABC"` 会被写成 `"CBA"`，破坏原始顺序；因此只有写入 **指针或多字节整数** 时才必须显式声明 `endness`。
+
 ---
 
 ## 4 参考解脚本（节选）
