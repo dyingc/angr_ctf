@@ -9,4 +9,5 @@ dependencies = [
     "ipython>=8.37.0",
     "jinja2>=3.1.6",
     "pwntools>=4.14.1",
+    "templite>=0.2.1",
 ]

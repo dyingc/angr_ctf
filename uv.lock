@@ -56,6 +56,7 @@ dependencies = [
     { name = "ipython", version = "9.4.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "jinja2" },
     { name = "pwntools" },
+    { name = "templite" },
 ]
 
 [package.metadata]
@@ -64,6 +65,7 @@ requires-dist = [
     { name = "ipython", specifier = ">=8.37.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "pwntools", specifier = ">=4.14.1" },
+    { name = "templite", specifier = ">=0.2.1" },
 ]
 
 [[package]]
@@ -1563,6 +1565,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5", size = 6299353, upload-time = "2025-04-27T18:04:59.103Z" },
 ]
+
+[[package]]
+name = "templite"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/6f/64/b1ec268f33b649c9206f4a7809a303b274c8308d926724441a4b59fe0c31/templite-0.2.1.tar.gz", hash = "sha256:73c5bb138b4bfd538a9189d9336f16910d2184aa373855f146290aea5e5b42cd", size = 10974, upload-time = "2016-01-10T10:00:06.431Z" }
 
 [[package]]
 name = "traitlets"
