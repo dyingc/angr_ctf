@@ -32,3 +32,75 @@
 # can take a long time with Angr, so you should replace it with a SimProcedure.
 # angr.SIM_PROCEDURES['glibc']['__libc_start_main']
 # Note 'glibc' instead of 'libc'.
+
+
+import angr
+import claripy
+from angr.sim_state import SimState
+from angr.sim_procedure import SimProcedure
+from angr import SIM_LIBRARIES
+from angr import SIM_PROCEDURES
+from angr import SIM_TYPE_COLLECTIONS
+from typing import Dict, List
+from cle.backends.symbol import Symbol
+
+# Get all the symbols
+def symbol_filter(p: angr.Project) -> Dict[int, Symbol]:
+    symbols = p.loader.symbols
+    interested_symbol_names = ['strcmp', 'printf', 'exit', '__isoc99_scanf', 'puts']
+    chosens : Dict[int, Symbol] = dict()
+    for sym in symbols:
+        if 'builtin_strncpy' in sym.name:
+            print(sym.name)
+        if not sym.is_function or not sym.name in interested_symbol_names:
+            continue
+        addr = sym.rebased_addr
+        if not addr in chosens.keys():
+            chosens[addr] = sym
+    return chosens
+
+def hook_simprocedures(p: angr.Project, syms: Dict[int, SimProcedure]) -> None:
+    for addr, s in syms.items():
+        simproc = s()
+        p.hook(addr, simproc)
+
+def get_simprocedure_by_name(syms: Dict[int, Symbol]) -> Dict[int, SimProcedure]:
+    simprocedures = SIM_PROCEDURES['libc']
+    matched : Dict[int, SimProcedure] = dict()
+    for addr, sym in syms.items():
+        name = sym.name.replace('__isoc99_', '')  # Adjust for naming differences
+        simproc = simprocedures.get(name, None)
+        if simproc is not None:
+            matched[addr] = simproc
+        else:
+            print(f"Cannot find simprocedure for symbol name: {name}")
+    return matched
+
+def main(argv: List[str]) -> None:
+    binary_path = 'binary/x32/13_angr_static_binary'
+    binary_path = argv[1] if len(argv) > 1 else binary_path
+    project = angr.Project(binary_path, auto_load_libs=False)
+    interested_symbols = symbol_filter(project)
+    syms = get_simprocedure_by_name(interested_symbols)
+    hook_simprocedures(project, syms)
+
+    state = project.factory.entry_state(
+        addr=project.loader.find_symbol('main').rebased_addr,
+        add_options={
+            angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,}
+    )
+
+    simgr = project.factory.simulation_manager(state)
+
+    simgr.explore(find=lambda s: b"Good Job." in s.posix.dumps(1),
+                  avoid=lambda s: b"Try again." in s.posix.dumps(1))
+
+    if simgr.found:
+        found = simgr.found[0]
+        flag = found.posix.dumps(0).decode().strip()
+        print(f"Flag: {flag}")
+
+if __name__ == '__main__':
+    import sys
+    main(sys.argv)
