@@ -46,6 +46,14 @@
 - `user_input_2` 只有 16 字节
 - `%20s` 允许 20 字节 → 溢出 4 字节覆盖 `dest`
 - `input2[0:15]` → 缓冲区，`input2[16:19]` → dest 指针
+- 栈上 `dest` 紧随 `user_input_2` 之后，二者相距 16 字节，因此第 16~19 字节会按小端序写入指针值（覆盖 `ebp-0x0c` 处的 `dest`）。
+
+简单映射（偏移从 0 开始）：
+```
+偏移(十进制):   0 .......... 15 | 16  17  18  19 | 20 ..
+内容:           user_input_2     |  覆盖 dest 指针 | 其余被忽略/未读
+写入到内存:     [ebp-0x1c .. -0x11] | [ebp-0x0c .. -0x09]
+```
 
 ### 2.2 漏洞触发（第三次 strncpy）
 
@@ -105,6 +113,62 @@ state.add_constraints(dest == concrete_dest)
 - 利用目标：需要特定的小地址（`password_buffer`）
 
 **解决**：显式告诉求解器选择目标地址，覆盖默认策略。
+
+### 3.4 scanf 中整数 key 的具体化（至关重要）
+
+本题中第一段输入为 `%u`（无符号整数，文中称为 `key`）。该整数经常参与分支判断，决定后续是否会执行到“第 3 次 strncpy”（即使用我们覆写后的 `dest` 指针的那次调用）。如果不对 `key` 做好具体化策略，可能出现：
+- 路径爆炸：大量无关分支被探索，迟迟无法触达目标调用点；
+- 约束冲突：在添加“`dest==password_buffer` 且 `src=="IDGNGCXX"`”约束后，`key` 的取值空间与既有路径条件不相容。
+
+常用的两种做法：
+
+1) 早期具体化（在 scanf Hook 内直接收敛）
+```python
+class ReplacementScanf(angr.SimProcedure):
+    def run(self, fmt, key_ptr, str_ptr):
+        scanf0 = claripy.BVS('scanf0', 32)         # key
+        scanf1 = claripy.BVS('scanf1', 20*8)       # user_input_2
+        # 可选：限制 key 的取值范围，减少爆炸（如 0..1000）
+        # self.state.solver.add(scanf0 >= 0, scanf0 <= 1000)
+
+        # 直接设置关键路径所需的 key（来自逆向/调试经验）
+        # self.state.solver.add(scanf0 == TARGET_KEY)
+
+        # 约束 scanf1 为可见 ASCII
+        for ch in scanf1.chop(bits=8):
+            self.state.add_constraints(ch >= 0x20, ch <= 0x7e)
+
+        self.state.memory.store(key_ptr, scanf0, endness=self.arch.memory_endness)
+        self.state.memory.store(str_ptr, scanf1)
+        self.state.globals['input1'] = scanf0
+        self.state.globals['input2'] = scanf1
+        return 2
+```
+- 适合“已知关键分支条件”的场景，能显著减少搜索空间；
+- 若不确定具体值，可先限定区间，待到命中检查点后再 `eval` 求出确切数值。
+
+2) 惰性具体化（在检查点与其它关键约束一并判定）
+在 `check_strncpy` 命中时统一判断“`dest==password_buffer` 且 `src=="IDGNGCXX"`”是否可满足；若可满足，再一次性具体化 `key`：
+```python
+def check_strncpy(state):
+    ...
+    constraint_dest = (strncpy_dest == password_buffer_addr)
+    constraint_src  = (src_contents == b'IDGNGCXX')
+
+    if state.satisfiable(extra_constraints=(constraint_dest, constraint_src)):
+        state.add_constraints(constraint_dest, constraint_src)
+        # 这时再对 key 进行具体化，得到一个满足路径与目标的稳定取值
+        key_val = state.solver.eval(state.globals['input1'], cast_to=int)
+        state.globals['concrete_key'] = key_val
+        return True
+    return False
+```
+- 优点：不需要预先知道 `key` 的精确取值；
+- 建议仍然给 `key` 添加适度范围约束，避免无界整数导致的路径爆炸。
+
+实践建议：
+- 如果通过静态分析已知“只有某些 key 会走到第 3 次 strncpy”，优先在 scanf Hook 中直接具体化；
+- 若不清楚取值，则先保持 `key` 符号化，在命中检查点时统一具体化，并可打印 `key` 便于后续固定。
 
 ## 4. 解法 A：Hook strncpy 添加约束
 

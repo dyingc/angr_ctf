@@ -4,6 +4,9 @@ from angr.sim_state import SimState
 from angr.sim_procedure import SimProcedure
 from angr.project import Project
 from typing import List
+from angr.analyses.cfg.cfg_fast import CFGFast
+
+cfg: CFGFast = None
 
 # hooking for scanf
 class Scanf(SimProcedure):
@@ -53,7 +56,7 @@ def get_prev_instruction_addr(project: Project, addr: int, debug: bool = False) 
     2. 对每个候选地址,检查它是否是有效的指令起始地址
     3. 找到的第一个有效地址就是答案!
     """
-    cfg = project.analyses.CFGFast()
+    global cfg # 使用全局 cfg，这不仅是为了性能，也是为了确保一致性，尤其是如果本函数被 hook function 调用时，CFGFast 会将 hook 地址识别为基本块的边界，从而彻底打乱执行流程
 
     if debug:
         print(f"查找 0x{addr:x} 的前一条指令:")
@@ -86,10 +89,52 @@ def get_prev_instruction_addr(project: Project, addr: int, debug: bool = False) 
 
     raise Exception(f"在前 15 字节内找不到地址 0x{addr:x} 的前一条指令")
 
+def get_prev_instruction(project: Project, addr: int, debug: bool = False) -> CapstoneInsn:
+    """
+    通过反向扫描找到前一条有效指令
+    """
+    global cfg # 使用全局 cfg，这不仅是为了性能，也是为了确保一致性，尤其是如果本函数被 hook function 调用时，CFGFast 会将 hook 地址识别为基本块的边界，从而彻底打乱执行流程
+
+    if debug:
+        print(f"查找 0x{addr:x} 的前一条指令:")
+
+    for offset in range(1, 16):
+        candidate_addr = addr - offset
+
+        node = cfg.model.get_any_node(candidate_addr, anyaddr=True)
+        if not node:
+            if debug:
+                print(f"  0x{candidate_addr:x}: 没有节点")
+            continue
+
+        try:
+            block = project.factory.block(node.addr)
+
+            # 找到候选地址对应的指令
+            for insn in block.capstone.insns:
+                if insn.address == candidate_addr:
+                    if debug:
+                        print(f"  0x{candidate_addr:x}: ✓ 找到!")
+                    return insn
+
+            if debug:
+                print(f"  0x{candidate_addr:x}: 无效(不在指令列表中)")
+
+        except Exception as e:
+            if debug:
+                print(f"  0x{candidate_addr:x}: 异常 - {e}")
+            continue
+
+    raise Exception(f"在前 15 字节内找不到地址 0x{addr:x} 的前一条指令")
+
 def main(argv: List[str]):
     # Load the binary
     binary = argv[1] if len(argv) > 1 else "./binary/x32/15_angr_arbitrary_read"
     project = angr.Project(binary, auto_load_libs=False)
+
+    # Prepare the CFGFast analysis globally
+    global cfg
+    cfg = project.analyses.CFGFast()
 
     # Install hooks
     install_hooks(project)
