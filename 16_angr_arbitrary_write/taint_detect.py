@@ -29,21 +29,21 @@ def get_prev_instruction_addr(project: Project, addr: int) -> int:
         prev_insn_addr = insn_addrs[idx - 1]
         return prev_insn_addr
 
-# Hook strncpy as a "monitored" function to track if the 2nd paramter, the source buffer, is controlled by us.
+# Hook strncpy as a "monitored" function to track if the 1st paramter, the dest buffer, is controlled by us - polluted.
 # This is a pure monitoring hook - the hooking length is 0, so the original function will be executed.
 def hook_strncpy(s: SimState):
-    # Get the source buffer (2nd argument) which is at: esp + 8
-    src_buf_ptr = s.regs.esp + 8
-    # Get the length of the source buffer (3rd argument) which is at: esp + 0xc
+    # Get the dest buffer (1st argument) which is at: esp + 4
+    dest_buf_ptr_stack_loc = s.regs.esp + 4
+    # Get the length of the source buffer (2nd argument) which is at: esp + 0xc
     length_ptr = s.regs.esp + 0xc
     length_val = s.memory.load(length_ptr, 4, endness=s.arch.memory_endness)
     # Load the actual source buffer
-    src_buf_ptr = s.memory.load(src_buf_ptr, 4, endness = s.arch.memory_endness)
-    src_buf = s.memory.load(src_buf_ptr, length_val)
+    dest_buf_ptr = s.memory.load(dest_buf_ptr_stack_loc, 4, endness = s.arch.memory_endness)
+    dest_buf = s.memory.load(dest_buf_ptr, length_val)
     # Check if the source buffer is symbolic (controlled by us)
     ret_addr = s.memory.load(s.regs.esp, 4, endness=s.arch.memory_endness).concrete_value
     print(f"    strncpy called, return address: {hex(ret_addr)}")
-    if s.solver.symbolic(src_buf):
+    if s.solver.symbolic(dest_buf):
         print("[*] strncpy called with a symbolic source buffer!")
         # Get the return address from the stack (esp)
         ret_addr_ptr = s.regs.esp
@@ -52,21 +52,32 @@ def hook_strncpy(s: SimState):
         # Store the return address in globals for later retrieval
         s.globals['strncpy_ret_addr'] = ret_addr
 
+def hook_testing(s: SimState):
+    print(f"Current instruction address: {hex(s.addr)}")
+    # Get the value of the first stack data (esp)
+    first_stack_data_ptr = s.regs.esp
+    first_stack_data = s.memory.load(first_stack_data_ptr, 4, endness=s.arch.memory_endness)
+    # Check if it's symbolic
+    if s.solver.symbolic(first_stack_data):
+        print("[*] The first stack data is symbolic!")
+        # Add constraint that it should be equal to 0x47424e48
+        s.add_constraints(first_stack_data == 0x47424e48)
+        print("[*] Added constraint that first stack data == 0x47424e48")
+
 # Hook strncmp as a "monitored" function to track if the 1st paramter, is controlled by us (from the PCode, the 2nd one is a literal string).
 # This is a pure monitoring hook - the hooking length is 0, so the original function will be executed.
 def hook_strncmp(s: SimState):
     # Get the source buffer (1st argument) which is at: esp + 4
-    src_buf_ptr = s.regs.esp + 4
+    src_buf_ptr_loc = s.regs.esp + 4
     # Get the length of the source buffer (3rd argument) which is at: esp + 0xc
     length_ptr = s.regs.esp + 0xc
     length_val = s.memory.load(length_ptr, 4, endness=s.arch.memory_endness)
     # Load the actual source buffer
-    src_buf_ptr = s.memory.load(src_buf_ptr, 4, endness = s.arch.memory_endness)
+    src_buf_ptr = s.memory.load(src_buf_ptr_loc, 4, endness = s.arch.memory_endness)
     src_buf = s.memory.load(src_buf_ptr, length_val)
     # Check if the source buffer is symbolic (controlled by us)
     ret_addr = s.memory.load(s.regs.esp, 4, endness=s.arch.memory_endness).concrete_value
     print(f"    strncmp called, return address: {hex(ret_addr)}")
-    src_buf_8_str = src_buf.concrete_value.to_bytes(length_val.concrete_value)
     if s.solver.symbolic(src_buf):
         print("[*] strncmp called with a symbolic source buffer!")
         # Get the return address from the stack (esp)
@@ -75,6 +86,17 @@ def hook_strncmp(s: SimState):
         print(f"    Return address: {hex(ret_addr)}")
         # Store the return address in globals for later retrieval
         s.globals['strncmp_ret_addr'] = ret_addr
+        s.solver.add(src_buf == 'IDGNGCXX')
+        s.globals['pwd'] = src_buf
+        if s.solver.satisfiable():
+            key = s.solver.eval(s.globals['input1'], cast_to=int)
+            user_input_2 = s.solver.eval(s.globals['input2'], cast_to=bytes)
+            print(f"    [*] Found a satisfiable condition: {key} {user_input_2.decode()}")
+        else:
+            print("    [-] No satisfiable condition found!")
+        pass
+    else:
+        src_buf_8_str = src_buf.concrete_value.to_bytes(length_val.concrete_value)
 
 # hooking for scanf
 class Scanf(SimProcedure):
@@ -91,6 +113,13 @@ class Scanf(SimProcedure):
 
         # The second input should be a string of max length 20
         input2 = self.state.solver.BVS("input2", 20 * 8)
+
+        # Add constraint to ensure the input2 is visible ASCII characters
+        for i in range(20):
+            char = input2.get_byte(i)
+            self.state.add_constraints(char >= 0x20)  # space
+            self.state.add_constraints(char <= 0x7e)  # tilde
+        # Store the second input into memory
         self.state.memory.store(input2_ptr, input2)
 
         # Store the two inputs into globals for later retrieval
@@ -115,6 +144,11 @@ def install_hooks(project: angr.Project):
 
     # Hook scanf
     project.hook_symbol("__isoc99_scanf", Scanf(project))
+
+    # Hook testing
+    testing_addrs = [0x0804920e, 0x0804920e, 0x08049279, 0x08049291]
+    for addr in testing_addrs:
+        project.hook(addr, hook_testing, length=0)
 
 def main(argv: List[str]):
     # Load the binary
@@ -147,14 +181,11 @@ def main(argv: List[str]):
 
     if simgr.found:
         s = simgr.found[0]
-        s.add_constraints(s.regs.eax == 0)  # strcmp returns 0 for equality
-        if s.solver.satisfiable():
-            print("[*] Found a successful state!")
-            input = s.solver.eval(s.globals['full_input'], cast_to=bytes)
-            print(f"[*] Input causing the success: {input}")
-        else:
-            print("[-] The found state is not satisfiable.")
-            return
+        print("[*] Found a successful state!")
+        input = s.solver.eval(s.globals['full_input'], cast_to=bytes)
+        print(f"[*] Input causing the success: {input}")
+        pwd = s.solver.eval(s.globals['pwd'], cast_to=bytes)
+        print(f"[*] Password used: {pwd}")
 
         # Check if we detected any taint during execution
         if 'strncpy_ret_addr' in s.globals:
