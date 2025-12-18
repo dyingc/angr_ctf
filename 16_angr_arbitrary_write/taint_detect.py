@@ -38,6 +38,7 @@ def hook_strncpy(s: SimState):
     length_ptr = s.regs.esp + 0xc
     length_val = s.memory.load(length_ptr, 4, endness=s.arch.memory_endness)
     # Load the actual source buffer
+    src_buf_ptr = s.memory.load(src_buf_ptr, 4, endness = s.arch.memory_endness)
     src_buf = s.memory.load(src_buf_ptr, length_val)
     # Check if the source buffer is symbolic (controlled by us)
     ret_addr = s.memory.load(s.regs.esp, 4, endness=s.arch.memory_endness).concrete_value
@@ -60,10 +61,12 @@ def hook_strncmp(s: SimState):
     length_ptr = s.regs.esp + 0xc
     length_val = s.memory.load(length_ptr, 4, endness=s.arch.memory_endness)
     # Load the actual source buffer
+    src_buf_ptr = s.memory.load(src_buf_ptr, 4, endness = s.arch.memory_endness)
     src_buf = s.memory.load(src_buf_ptr, length_val)
     # Check if the source buffer is symbolic (controlled by us)
     ret_addr = s.memory.load(s.regs.esp, 4, endness=s.arch.memory_endness).concrete_value
     print(f"    strncmp called, return address: {hex(ret_addr)}")
+    src_buf_8_str = src_buf.concrete_value.to_bytes(length_val.concrete_value)
     if s.solver.symbolic(src_buf):
         print("[*] strncmp called with a symbolic source buffer!")
         # Get the return address from the stack (esp)
