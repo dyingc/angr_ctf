@@ -5,80 +5,119 @@ from angr.sim_procedure import SimProcedure
 from angr.project import Project
 from typing import List
 
-def get_prev_instruction_addr(project: Project, addr: int) -> int:
+def get_prev_instruction_addr(project: Project, addr: int, debug: bool = False) -> int:
+    """
+    通过反向扫描找到前一条有效指令
+
+    原理:
+    1. 从 addr-1 开始往前扫描(最多15字节)
+    2. 对每个候选地址,检查它是否是有效的指令起始地址
+    3. 找到的第一个有效地址就是答案!
+    """
     cfg = project.analyses.CFGFast()
 
-    # 找到包含目标地址的 CFG 节点
-    node = cfg.model.get_any_node(addr, anyaddr=True)
+    if debug:
+        print(f"查找 0x{addr:x} 的前一条指令:")
 
-    if node:
-        block = project.factory.block(node.addr)
-        insn_addrs = block.instruction_addrs
+    for offset in range(1, 16):
+        candidate_addr = addr - offset
 
-        if addr == node.addr:  # 如果是基本块的第一条指令
-            # 需要找前驱基本块的最后一条指令
-            predecessors = cfg.graph.predecessors(node)
-            for pred in predecessors:
-                pred_block = project.factory.block(pred.addr)
-                prev_insn_addr = pred_block.instruction_addrs[-1]
-                return prev_insn_addr
-            raise Exception("没有前驱基本块，无法找到前一条指令地址")
-    else:
-        # 在同一基本块内处理
-        idx = insn_addrs.index(addr)
-        prev_insn_addr = insn_addrs[idx - 1]
-        return prev_insn_addr
+        node = cfg.model.get_any_node(candidate_addr, anyaddr=True)
+        if not node:
+            if debug:
+                print(f"  0x{candidate_addr:x}: 没有节点")
+            continue
+
+        try:
+            block = project.factory.block(node.addr)
+            insn_addrs = block.instruction_addrs
+
+            if candidate_addr in insn_addrs:
+                if debug:
+                    print(f"  0x{candidate_addr:x}: ✓ 找到!")
+                return candidate_addr
+            else:
+                if debug:
+                    print(f"  0x{candidate_addr:x}: 无效(不在指令列表中)")
+
+        except Exception as e:
+            if debug:
+                print(f"  0x{candidate_addr:x}: 异常 - {e}")
+            continue
+
+    raise Exception(f"在前 15 字节内找不到地址 0x{addr:x} 的前一条指令")
 
 # Hook strncpy as a "monitored" function to track if the 1st paramter, the dest buffer, is controlled by us - polluted.
 # This is a pure monitoring hook - the hooking length is 0, so the original function will be executed.
-def hook_strncpy(s: SimState):
-    # Get the dest buffer (1st argument) which is at: esp + 4
-    dest_buf_ptr_stack_loc = s.regs.esp + 4
-    # Get the length of the source buffer (2nd argument) which is at: esp + 0xc
-    length_ptr = s.regs.esp + 0xc
-    length_val = s.memory.load(length_ptr, 4, endness=s.arch.memory_endness)
-    # Load the actual source buffer
-    dest_buf_ptr = s.memory.load(dest_buf_ptr_stack_loc, 4, endness = s.arch.memory_endness)
-    dest_buf = s.memory.load(dest_buf_ptr, length_val)
-    # Check if the source buffer is symbolic (controlled by us)
-    ret_addr = s.memory.load(s.regs.esp, 4, endness=s.arch.memory_endness).concrete_value
-    print(f"    strncpy called, return address: {hex(ret_addr)}")
-    if s.solver.symbolic(dest_buf):
-        print("[*] strncpy called with a symbolic source buffer!")
-        # Get the return address from the stack (esp)
-        ret_addr_ptr = s.regs.esp
-        ret_addr = s.memory.load(ret_addr_ptr, 4, endness=s.arch.memory_endness).concrete_value
-        print(f"    Return address: {hex(ret_addr)}")
-        # Store the return address in globals for later retrieval
-        s.globals['strncpy_ret_addr'] = ret_addr
+# Here we need to control both:
+# What to copy - the content of the source buffer
+# Where to copy - the destination buffer (the pointer)
 
-def hook_testing(s: SimState):
-    print(f"Current instruction address: {hex(s.addr)}")
-    # Get the value of the first stack data (esp)
-    first_stack_data_ptr = s.regs.esp
-    first_stack_data = s.memory.load(first_stack_data_ptr, 4, endness=s.arch.memory_endness)
-    # Check if it's symbolic
-    if s.solver.symbolic(first_stack_data):
-        print("[*] The first stack data is symbolic!")
-        # Add constraint that it should be equal to 0x47424e48
-        s.add_constraints(first_stack_data == 0x47424e48)
-        print("[*] Added constraint that first stack data == 0x47424e48")
+def _is_controlled(s: SimState, var: claripy.ast.bv.BV) -> bool:
+    if s.solver.symbolic(var):
+        sym_name = list(var.variables)[0]
+        if 'input1' in sym_name or 'input2' in sym_name:
+            return True # controlled by us
+    return False
+
+def hook_strncpy(proj: angr.Project):
+    def _hook_strncpy(s: SimState):
+        # Get the dest buffer
+        dest_buf_stack_loc = s.regs.esp + 4 # The dest buffer is the first argument which is stored at: esp + 4
+        # Load the actual dest buffer
+        dest_buf = s.memory.load(dest_buf_stack_loc, 4, endness = s.arch.memory_endness)
+
+        # Get the contents of the source buffer
+        src_buf_stack_loc = s.regs.esp + 8 # The source buffer is the second argument which is stored at: esp + 8
+        src_buf = s.memory.load(src_buf_stack_loc, 4, endness = s.arch.memory_endness) # the source buffer (pointer)
+        src_buf_contents = s.memory.load(src_buf, 8) # Load 8 bytes from the source buffer as we need to constraint it later
+
+        # Check if the dest buffer (a pointer) is symbolic (controlled by us)
+        if _is_controlled(s, dest_buf) and _is_controlled(s, src_buf_contents):
+            ret_addr_ptr = s.regs.esp
+            ret_addr = s.memory.load(ret_addr_ptr, 4, endness=s.arch.memory_endness).concrete_value
+            print(f"    strncpy called, return address: {hex(ret_addr)}")
+            print("[*] strncpy called with a symbolic source buffer!")
+            # Get the return address from the stack (esp)
+            print(f"    Return address: {hex(ret_addr)}")
+            # Store the return address in globals for later retrieval
+            s.globals['strncpy_ret_addr'] = ret_addr
+            # Add a constraint to set the dest buffer to the password_buffer
+            password_buffer_sym = proj.loader.find_symbol('password_buffer')
+            if password_buffer_sym is None:
+                raise Exception("password_buffer symbol not found in the binary.")
+            password_buffer_addr = password_buffer_sym.rebased_addr
+            s.add_constraints(dest_buf == password_buffer_addr)
+            # Also constrain the source buffer content to be the correct password
+            s.add_constraints(src_buf_contents == b'IDGNGCXX')
+            if s.solver.satisfiable():
+                key = s.solver.eval(s.globals['input1'], cast_to=int)
+                print(f"    [*] Found a satisfiable condition: {key}")
+                user_input_2 = s.solver.eval(s.globals['input2'], cast_to=bytes)
+                print(f"    [*] Found a satisfiable condition: input2 {user_input_2}")
+                print(f"    [*] Found a satisfiable condition: {key} {user_input_2.decode()}")
+            else:
+                print("    [-] No satisfiable condition found!")
+
+    return _hook_strncpy
 
 # Hook strncmp as a "monitored" function to track if the 1st paramter, is controlled by us (from the PCode, the 2nd one is a literal string).
 # This is a pure monitoring hook - the hooking length is 0, so the original function will be executed.
 def hook_strncmp(s: SimState):
-    # Get the source buffer (1st argument) which is at: esp + 4
-    src_buf_ptr_loc = s.regs.esp + 4
+    # Get the content of the source buffer (1st argument) which is at: esp + 4
+    src_buf_loc = s.regs.esp + 4
     # Get the length of the source buffer (3rd argument) which is at: esp + 0xc
     length_ptr = s.regs.esp + 0xc
     length_val = s.memory.load(length_ptr, 4, endness=s.arch.memory_endness)
-    # Load the actual source buffer
-    src_buf_ptr = s.memory.load(src_buf_ptr_loc, 4, endness = s.arch.memory_endness)
-    src_buf = s.memory.load(src_buf_ptr, length_val)
-    # Check if the source buffer is symbolic (controlled by us)
-    ret_addr = s.memory.load(s.regs.esp, 4, endness=s.arch.memory_endness).concrete_value
-    print(f"    strncmp called, return address: {hex(ret_addr)}")
-    if s.solver.symbolic(src_buf):
+    # Load the source buffer (a pointer)
+    src_buf = s.memory.load(src_buf_loc, 4, endness = s.arch.memory_endness)
+    # Load the source buffer content
+    src_buf_contents = s.memory.load(src_buf, length_val)
+    # Check if the source buffer or the source buffer content is controlled by us
+    if _is_controlled(s, src_buf) or _is_controlled(s, src_buf_contents):
+        # Now we know the source buffer is controlled by us
+        ret_addr = s.memory.load(s.regs.esp, 4, endness=s.arch.memory_endness).concrete_value
+        print(f"    strncmp called, return address: {hex(ret_addr)}")
         print("[*] strncmp called with a symbolic source buffer!")
         # Get the return address from the stack (esp)
         ret_addr_ptr = s.regs.esp
@@ -86,17 +125,20 @@ def hook_strncmp(s: SimState):
         print(f"    Return address: {hex(ret_addr)}")
         # Store the return address in globals for later retrieval
         s.globals['strncmp_ret_addr'] = ret_addr
-        s.solver.add(src_buf == 'IDGNGCXX')
-        s.globals['pwd'] = src_buf
+        s.solver.add(src_buf_contents == b'IDGNGCXX')
+        s.globals['key'] = src_buf_contents
         if s.solver.satisfiable():
             key = s.solver.eval(s.globals['input1'], cast_to=int)
+            print(f"    [*] Found a satisfiable condition: {key}")
             user_input_2 = s.solver.eval(s.globals['input2'], cast_to=bytes)
+            print(f"    [*] Found a satisfiable condition: input2 {user_input_2}")
             print(f"    [*] Found a satisfiable condition: {key} {user_input_2.decode()}")
         else:
             print("    [-] No satisfiable condition found!")
         pass
     else:
         src_buf_8_str = src_buf.concrete_value.to_bytes(length_val.concrete_value)
+        print(f"    strncmp called with a concrete source buffer: {src_buf_8_str}")
 
 # hooking for scanf
 class Scanf(SimProcedure):
@@ -134,8 +176,9 @@ def install_hooks(project: angr.Project):
     strncpy_sym = project.loader.find_symbol('strncpy')
     # Hook strncpy if found
     if strncpy_sym is not None:
+        # strncpy_addr = strncpy_sym.rebased_addr # This doesn't work (probably GOT rather than PLT, the needed one) - need to use the radare2 found address
         strncpy_addr = 0x08049070 # I've got this from radare2 but why this value is different with strncpy_sym.rebased_addr (which is 0x47500010)?
-        project.hook(strncpy_addr, hook_strncpy, length=0)
+        project.hook(strncpy_addr, hook_strncpy(project), length=0)
     else:
         raise Exception("strncpy symbol not found in the binary.")
 
@@ -145,10 +188,10 @@ def install_hooks(project: angr.Project):
     # Hook scanf
     project.hook_symbol("__isoc99_scanf", Scanf(project))
 
-    # Hook testing
-    testing_addrs = [0x0804920e, 0x0804920e, 0x08049279, 0x08049291]
-    for addr in testing_addrs:
-        project.hook(addr, hook_testing, length=0)
+    # # Hook testing
+    # testing_addrs = [0x0804920e, 0x0804920e, 0x08049279, 0x08049291]
+    # for addr in testing_addrs:
+    #     project.hook(addr, hook_testing, length=0)
 
 def main(argv: List[str]):
     # Load the binary
@@ -176,15 +219,15 @@ def main(argv: List[str]):
         return b"Good Job." in stdout_output
 
     simgr = project.factory.simulation_manager(state)
-    # simgr.explore(find=is_successful)
-    simgr.explore(find=0x080492ae)
+    simgr.explore(find=is_successful)
+    # simgr.explore(find=0x080492ae)
 
     if simgr.found:
         s = simgr.found[0]
         print("[*] Found a successful state!")
-        input = s.solver.eval(s.globals['full_input'], cast_to=bytes)
-        print(f"[*] Input causing the success: {input}")
-        pwd = s.solver.eval(s.globals['pwd'], cast_to=bytes)
+        key = s.solver.eval(s.globals['input1'], cast_to=int)
+        print(f"[*] Input causing the success: {key}")
+        pwd = s.solver.eval(s.globals['input2'], cast_to=bytes)
         print(f"[*] Password used: {pwd}")
 
         # Check if we detected any taint during execution

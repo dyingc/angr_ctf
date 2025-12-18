@@ -44,29 +44,47 @@ def install_hooks(project: Project):
     project.hook_symbol("__isoc99_scanf", Scanf(project))
     project.hook_symbol("puts", Puts())
 
-def get_prev_instruction_addr(project: Project, addr: int) -> int:
+def get_prev_instruction_addr(project: Project, addr: int, debug: bool = False) -> int:
+    """
+    通过反向扫描找到前一条有效指令
+
+    原理:
+    1. 从 addr-1 开始往前扫描(最多15字节)
+    2. 对每个候选地址,检查它是否是有效的指令起始地址
+    3. 找到的第一个有效地址就是答案!
+    """
     cfg = project.analyses.CFGFast()
 
-    # 找到包含目标地址的 CFG 节点
-    node = cfg.model.get_any_node(addr, anyaddr=True)
+    if debug:
+        print(f"查找 0x{addr:x} 的前一条指令:")
 
-    if node:
-        block = project.factory.block(node.addr)
-        insn_addrs = block.instruction_addrs
+    for offset in range(1, 16):
+        candidate_addr = addr - offset
 
-        if addr == node.addr:  # 如果是基本块的第一条指令
-            # 需要找前驱基本块的最后一条指令
-            predecessors = cfg.graph.predecessors(node)
-            for pred in predecessors:
-                pred_block = project.factory.block(pred.addr)
-                prev_insn_addr = pred_block.instruction_addrs[-1]
-                return prev_insn_addr
-            raise Exception("没有前驱基本块，无法找到前一条指令地址")
-    else:
-        # 在同一基本块内处理
-        idx = insn_addrs.index(addr)
-        prev_insn_addr = insn_addrs[idx - 1]
-        return prev_insn_addr
+        node = cfg.model.get_any_node(candidate_addr, anyaddr=True)
+        if not node:
+            if debug:
+                print(f"  0x{candidate_addr:x}: 没有节点")
+            continue
+
+        try:
+            block = project.factory.block(node.addr)
+            insn_addrs = block.instruction_addrs
+
+            if candidate_addr in insn_addrs:
+                if debug:
+                    print(f"  0x{candidate_addr:x}: ✓ 找到!")
+                return candidate_addr
+            else:
+                if debug:
+                    print(f"  0x{candidate_addr:x}: 无效(不在指令列表中)")
+
+        except Exception as e:
+            if debug:
+                print(f"  0x{candidate_addr:x}: 异常 - {e}")
+            continue
+
+    raise Exception(f"在前 15 字节内找不到地址 0x{addr:x} 的前一条指令")
 
 def main(argv: List[str]):
     # Load the binary
