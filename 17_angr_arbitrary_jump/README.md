@@ -9,6 +9,14 @@
 ## 1. 场景与目标
 
 - 漏洞形态：read_input 调用 `__isoc99_scanf` 将数据写入栈上固定大小的缓冲区，未做长度限制，导致溢出覆盖 saved EBP 与返回地址（RET）。
+```c
+void read_input(void)
+{
+  byte buffer [25];
+  __isoc99_scanf("%s",buffer);
+  return;
+}
+```
 - 目标：将 RET 覆写为 `print_good` 的地址，函数返回时跳转执行，打印 “Good Job!”。
 
 ## 2. 栈布局与精确定义的偏移
@@ -40,19 +48,18 @@ read_input 的关键流程可抽象为：
 ## 4. 何为 Unconstrained State（重点）
 
 - 定义：当关键控制量（例如 EIP、内存访问地址）完全符号化，导致下一步“可能的分支/目标”不唯一且几乎无穷时，angr 会将该状态标记为 unconstrained。
-- angr 的默认行为：丢弃 unconstrained 状态（因为执行引擎无法“选择”下一条指令去哪儿）。
-- 本关的触发点：RET 被用户输入覆盖后，EIP 完全符号化。
+- angr 在 [8.18.10.5](https://docs.angr.io/en/latest/appendix/changelog.html#angr-8-18-10-5) 之前的默认行为是：丢弃 unconstrained 状态（因为执行引擎无法“选择”下一条指令去哪儿）。
+- 本关触发点：栈溢出覆盖返回地址后，RET 指令弹出符号值到 EIP。当 angr 检测到 EIP 的可能取值超过阈值（默认 256），会将该状态标记为 unconstrained
 - 正确做法：在创建 SimulationManager 时启用 `save_unconstrained=True`，将这类状态保留下来（放入 `simulation.unconstrained`）。随后把它们迁移到可供我们处理的 `found` 栈中，并对 `regs.eip` 施加“等于 print_good 地址”的约束，再回溯出满足约束的输入。
 
 简化示例（solutions/17_angr_arbitrary_jump/solve17.py 思路）：
 ```python
-symbolic_input = claripy.BVS("input", 8 * 100)
+from angr.storage.file import SimPackets
+symbolic_input = claripy.BVS("input", 8 * 33)  # 25 + 4 + 4
+input_packets = SimPackets(name='input_packets', content=[(symbolic_input, 33)])
 state = project.factory.entry_state(
-    stdin=symbolic_input,
-    add_options={
-        angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
-        angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
-    },
+    stdin=input_packets,  # 使用 SimPackets 而非直接传 BVS
+    add_options={...}
 )
 
 simgr = project.factory.simgr(state, save_unconstrained=True)
@@ -73,9 +80,12 @@ if simgr.found:
 
 要点与注意：
 - “探索”接口 `simgr.explore(find=...)` 对 unconstrained 状态并不会触发 find 回调，所以需要像上面这样“手动搬运”与约束。
-- 对“未约束的内存/寄存器”如何初始化会影响路径规模：
-  - `SYMBOL_FILL_UNCONSTRAINED_*`：用符号值填充（更“黑盒”，但约束空间更大）
-  - `ZERO_FILL_UNCONSTRAINED_*`：用零填充（更“保守”，可减少爆炸）
+- 对 State Options-“未约束的内存/寄存器”如何初始化-会影响路径规模：
+  - `SYMBOL_FILL_UNCONSTRAINED_*`：未初始化数据→符号值(更易检测控制流漏洞)
+  - `ZERO_FILL_UNCONSTRAINED_*`：未初始化数据→0(更贴近实际,但可能漏检)
+  - 本题用 SYMBOL_FILL 非强制,关键是符号输入能污染到 EIP
+- 注意: SYMBOL_FILL 让**未初始化内存读取**产生符号值，若该值流向 IP → unconstrained
+- ZERO_FILL 则让未初始化读取返回 0，流向 IP 时通常只会 deadended(跳转到 0x0)
 
 ## 5. 两条解题路线对比
 
@@ -130,13 +140,65 @@ class ScanfHook(SimProcedure):
 - 已知漏洞利用 → 首选 Hook（快速稳定）
 - 自动挖掘/泛化框架 → 利用 Unconstrained（更通用）
 
-## 6. 大坑：CFG 在 Hook 中被重新计算
+## 6. 两个关键陷阱
 
-这是本关特有且“致命”的坑。若你在 Hook 回调内部再次调用 `proj.analyses.CFGFast()` 重算 CFG，angr 会把 Hook 地址识别为基本块边界，从而改变当前控制流图结构；当 Hook 返回后，模拟器很可能“接不上”下一条指令，导致执行中断或卡住。
+### 陷阱 1：直接传 BVS 到 stdin 在 Unconstrained State 场景失效
 
-规避原则：
-- 仅在主流程（非 Hook）阶段预先计算一次 CFG，并在全局缓存与复用（参考 taint_detect.py 中的 `global cfg` 与注释）。
-- Hook 内严禁重算 CFG；若需要查询“前一条/下一条指令”，封装工具函数统一使用外部生成的 CFG。
+**问题**：直接传递符号变量到 `stdin` 参数时，angr 自动创建 `SimFile` 并设置 `has_end=True`，导致输入被限制为固定大小。在 buffer overflow 等需要检测 unconstrained state 的场景中，这会阻止正确触发符号化的指令指针。
+
+**症状**：`simulation.unconstrained`/`simulation.found` 始终为空，无法找到可利用的状态。
+
+**正确做法**：
+```python
+# ❌ 错误 - 会失败
+symbolic_input = claripy.BVS("input", (25 + 4 + 4) * 8)
+initial_state = project.factory.entry_state(stdin=symbolic_input)
+
+# ✅ 正确 - 使用 SimPackets
+from angr.storage.file import SimPackets
+symbolic_input = claripy.BVS("input", (25 + 4 + 4) * 8)
+input_packets = SimPackets(
+    name='input_packets',
+    content=[(symbolic_input, 25 + 4 + 4)]
+)
+initial_state = project.factory.entry_state(stdin=input_packets)
+```
+
+**原理**：SimPackets 支持流式读取和 short reads，不会强制限制输入边界，允许 overflow 正确传播到指令指针。
+
+**警告**：angr 会输出以下警告信息，提示你使用了错误的方式：
+```
+WARNING | angr.simos.simos | stdin is constrained to N bytes (has_end=True).
+If you are only providing the first N bytes instead of the entire stdin,
+please use stdin=SimFileStream(name='stdin', content=your_first_n_bytes, has_end=False).
+```
+这个警告表明直接传 BVS 导致 stdin 被限制，在 unconstrained state 检测场景会失效。
+
+### 陷阱 2：Hook 中重算 CFG 破坏控制流
+
+**问题**：在 Hook 回调内调用 `proj.analyses.CFGFast()` 会将 Hook 地址识别为新的基本块边界，改变 CFG 结构，导致 Hook 返回后模拟器无法继续执行。
+
+**症状**：执行在 Hook 后卡住或中断。
+
+**正确做法**：
+```python
+# 主流程：预先计算一次
+cfg = proj.analyses.CFGFast()
+
+def get_prev_instruction_addr(proj, addr):
+    global cfg  # 复用全局 CFG
+    node = cfg.model.get_any_node(addr, anyaddr=True)
+    # ... 查询逻辑
+
+def my_hook(state):
+    # ❌ 禁止：cfg = proj.analyses.CFGFast()
+    # ✅ 正确：使用全局 cfg
+    prev_addr = get_prev_instruction_addr(proj, state.addr)
+```
+
+**规避原则**：
+- CFG 仅在主流程中计算一次并全局缓存
+- 所有 Hook 和工具函数复用外部 CFG，严禁内部重算
 
 ## 7. 运行与验证
 
