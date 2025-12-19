@@ -1,0 +1,26 @@
+# xx_angr_segfault: Avoiding Segfaults with Symbolic Execution
+
+**Objective:** Use angr to find inputs that avoid a segmentation fault and reach the function's safe return point.
+
+**Core Problem:**
+- Program accepts two inputs via `scanf("%u %20s", &key, buf)`: a 32-bit key and a 20-char string
+- The 20-byte string input overflows a 16-byte buffer, overwriting a pointer variable (`local_18`)
+- Three code paths based on key value:
+  - Path A (key == 0x01d6fd86): dereferences overwritten pointer → segfault
+  - Path B (key == 0x0354e615): safe branch, no pointer dereference
+  - Default: dereferences overwritten pointer → segfault
+
+**angr Solution:**
+1. Hook `__isoc99_scanf` to create symbolic variables:
+   - `input1`: 32-bit BVS for key
+   - `input2`: 21-byte BVS for buffer (20 chars + null terminator)
+2. Add constraints: printable ASCII chars (0x20-0x7e), null-terminated
+3. Use `explore(find, avoid)`:
+   - **find**: Safe addresses (0x08048546 for function return, or 0x08048534 for Path B start)
+   - **avoid**: Addresses that dereference corrupted pointer (0x08048529, 0x0804853d, 0x08048540)
+4. Extract solution from found state
+
+**Key Points:**
+- No "success" output string exists; success = reaching safe return without crash
+- Can optionally constrain `key == 0x0354e615` to force safe path
+- Addresses may vary by compilation; verify with r2/objdump
