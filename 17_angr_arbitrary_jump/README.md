@@ -50,7 +50,7 @@ read_input 的关键流程可抽象为：
 - 定义：当关键控制量（例如 EIP、内存访问地址）完全符号化，导致下一步“可能的分支/目标”不唯一且几乎无穷时，angr 会将该状态标记为 unconstrained。
 - angr 在 [8.18.10.5](https://docs.angr.io/en/latest/appendix/changelog.html#angr-8-18-10-5) 之前的默认行为是：丢弃 unconstrained 状态（因为执行引擎无法“选择”下一条指令去哪儿）。
 - 本关触发点：栈溢出覆盖返回地址后，RET 指令弹出符号值到 EIP。当 angr 检测到 EIP 的可能取值超过阈值（默认 256），会将该状态标记为 unconstrained
-- 正确做法：在创建 SimulationManager 时启用 `save_unconstrained=True`，将这类状态保留下来（放入 `simulation.unconstrained`）。随后把它们迁移到可供我们处理的 `found` 栈中，并对 `regs.eip` 施加“等于 print_good 地址”的约束，再回溯出满足约束的输入。
+- 正确做法：在创建 SimulationManager 时启用 `save_unconstrained=True`（[8.18.10.5](https://docs.angr.io/en/latest/appendix/changelog.html#angr-8-18-10-5)之后默认开启），将这类状态保留下来（放入 `simulation.unconstrained`）。随后把它们迁移到可供我们处理的 `found` 栈中，并对 `regs.eip` 施加“等于 print_good 地址”的约束，再回溯出满足约束的输入。
 
 简化示例（solutions/17_angr_arbitrary_jump/solve17.py 思路）：
 ```python
